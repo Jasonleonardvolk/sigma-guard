@@ -13,3 +13,4 @@ venv/
 desktop.ini
 .DS_Store
 Thumbs.db
+docker/build_context/

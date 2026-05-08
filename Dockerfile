@@ -1,26 +1,27 @@
-# Dockerfile for SIGMA Graph Guard
-# Packages the SIGMA engine as a verification service.
+# Dockerfile (adapter layer only, no engine)
 #
-# Build: docker build -t invariant/sigma-guard .
-# Run:   docker run -p 8400:8400 invariant/sigma-guard
+# This image contains the sigma_guard integration layer, parsers,
+# adapters, and standalone verifier. It does NOT contain the SIGMA
+# core engine. Use it for independent verification of proof receipts
+# and as a base for custom integrations.
+#
+# For the full engine image:
+#   docker pull invariant/sigma-guard
+#
+# Build:
+#   docker build -t sigma-guard-adapter .
 
 FROM python:3.11-slim
 
 WORKDIR /opt/sigma-guard
 
-# Install dependencies
 COPY pyproject.toml .
 RUN pip install --no-cache-dir numpy scipy
 
-# Copy source
 COPY sigma_guard/ sigma_guard/
 COPY datasets/ datasets/
 
-# Install the package
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir -e .
 
-# Expose the API port
-EXPOSE 8400
-
-# Default: run the CLI help
-CMD ["sigma-guard", "--help"]
+ENTRYPOINT ["python", "-m", "sigma_guard.standalone_verifier"]
+CMD ["--help"]

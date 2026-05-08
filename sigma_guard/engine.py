@@ -135,11 +135,15 @@ class SigmaGuard:
                 "docker run -p 8400:8400 invariant/sigma-guard"
             )
 
+        # Free tier check
+        from sigma_guard.free_tier import check_free_tier
+        vertices = data.get("vertices", [])
+        check_free_tier(len(vertices))
+
         rng = np.random.RandomState(self.seed)
         graph = SheafGraph()
 
         # Add vertices
-        vertices = data.get("vertices", [])
         vertex_ids = {}
         for v in vertices:
             vid_key = v.get("id", v.get("label", ""))

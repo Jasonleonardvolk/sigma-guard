@@ -1,0 +1,55 @@
+# Dockerfile for SIGMA Guard (with engine)
+#
+# This image bundles the SIGMA core engine with the public
+# integration layer. It is built by docker/build.ps1 which
+# copies the core files into the build context at build time.
+#
+# The core source is NOT in the public GitHub repo.
+# The image IS the distribution artifact.
+#
+# Usage:
+#   docker run invariant/sigma-guard demo supply_chain
+#   docker run invariant/sigma-guard verify /data/graph.json
+#   docker run -p 8400:8400 invariant/sigma-guard serve
+#
+# May 2026 | Invariant Research
+
+FROM python:3.11-slim
+
+LABEL maintainer="Invariant Research <jason@invariant.pro>"
+LABEL description="Pre-commit contradiction detection for graph databases"
+LABEL version="0.1.0"
+
+WORKDIR /opt/sigma-guard
+
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    numpy>=1.21 \
+    scipy>=1.7 \
+    fastapi>=0.100 \
+    uvicorn>=0.20
+
+# Copy the SIGMA core engine (proprietary, not in public repo)
+COPY sigma/ /opt/sigma-guard/sigma/
+
+# Copy the public integration layer
+COPY sigma_guard/ /opt/sigma-guard/sigma_guard/
+
+# Copy datasets for demos
+COPY datasets/ /opt/sigma-guard/datasets/
+
+# Copy package config
+COPY pyproject.toml /opt/sigma-guard/
+
+# Install the package
+RUN pip install --no-cache-dir -e .
+
+# Set Python path so sigma.core is importable
+ENV PYTHONPATH=/opt/sigma-guard
+
+# Expose API port
+EXPOSE 8400
+
+# Default: show help
+ENTRYPOINT ["python", "-m", "sigma_guard.entrypoint"]
+CMD ["info"]
