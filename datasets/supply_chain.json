@@ -1,0 +1,54 @@
+{
+  "description": "Supply chain graph with 3 planted structural contradictions",
+  "ground_truth": {
+    "contradiction_count": 3,
+    "contradictions": [
+      {
+        "type": "sole_source_conflict",
+        "description": "Supplier_A claims sole-source for Component_X, but Supplier_B is also an active vendor for Component_X"
+      },
+      {
+        "type": "timeline_conflict",
+        "description": "Production schedule requires Component_Y by Q2, but the delivery timeline shows Q3 earliest"
+      },
+      {
+        "type": "capacity_conflict",
+        "description": "Factory_East claims 100% capacity utilization while also claiming ability to absorb 30% demand surge"
+      }
+    ]
+  },
+  "vertices": [
+    {"id": "supplier_a", "label": "Supplier_A", "claims": {"sole_source_component_x": true, "certified": true, "region": "north_america"}},
+    {"id": "supplier_b", "label": "Supplier_B", "claims": {"active_vendor_component_x": true, "certified": true, "region": "europe"}},
+    {"id": "component_x", "label": "Component_X", "claims": {"sole_source": true, "critical": true}},
+    {"id": "component_y", "label": "Component_Y", "claims": {"required_by": "Q2_2026", "lead_time_weeks": 16}},
+    {"id": "factory_east", "label": "Factory_East", "claims": {"capacity_utilization": 1.0, "surge_capacity": 0.3, "operational": true}},
+    {"id": "factory_west", "label": "Factory_West", "claims": {"capacity_utilization": 0.7, "surge_capacity": 0.0, "operational": true}},
+    {"id": "production_q2", "label": "Production_Q2", "claims": {"requires_component_y": true, "deadline": "Q2_2026"}},
+    {"id": "delivery_plan", "label": "Delivery_Plan", "claims": {"component_y_eta": "Q3_2026", "confirmed": true}},
+    {"id": "procurement", "label": "Procurement", "claims": {"approved_vendors_component_x": 1, "single_source_risk": "accepted"}},
+    {"id": "quality_board", "label": "Quality_Board", "claims": {"approved_vendors_component_x": 2, "dual_source_required": true}},
+    {"id": "risk_register", "label": "Risk_Register", "claims": {"single_source_risk": "mitigated", "surge_risk": "low"}},
+    {"id": "demand_forecast", "label": "Demand_Forecast", "claims": {"q3_surge_probability": 0.65, "surge_magnitude": 0.3}}
+  ],
+  "edges": [
+    {"source": "supplier_a", "target": "component_x", "relation": "supplies"},
+    {"source": "supplier_b", "target": "component_x", "relation": "supplies"},
+    {"source": "component_x", "target": "factory_east", "relation": "consumed_by"},
+    {"source": "component_x", "target": "factory_west", "relation": "consumed_by"},
+    {"source": "component_y", "target": "production_q2", "relation": "required_for"},
+    {"source": "delivery_plan", "target": "component_y", "relation": "delivers"},
+    {"source": "production_q2", "target": "factory_east", "relation": "scheduled_at"},
+    {"source": "procurement", "target": "supplier_a", "relation": "approved"},
+    {"source": "quality_board", "target": "supplier_a", "relation": "approved"},
+    {"source": "quality_board", "target": "supplier_b", "relation": "approved"},
+    {"source": "procurement", "target": "component_x", "relation": "sourcing_policy"},
+    {"source": "quality_board", "target": "component_x", "relation": "sourcing_policy"},
+    {"source": "risk_register", "target": "factory_east", "relation": "risk_assessment"},
+    {"source": "demand_forecast", "target": "factory_east", "relation": "demand_signal"},
+    {"source": "factory_east", "target": "factory_west", "relation": "overflow_to"},
+    {"source": "risk_register", "target": "procurement", "relation": "informs"},
+    {"source": "delivery_plan", "target": "production_q2", "relation": "timeline_for"},
+    {"source": "demand_forecast", "target": "risk_register", "relation": "informs"}
+  ]
+}

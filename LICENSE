@@ -1,0 +1,17 @@
+Business Source License 1.1
+
+Licensor:             Invariant Research (invariant.pro)
+Licensed Work:        SIGMA Graph Guard 0.1.0
+                      The Licensed Work is (c) 2026 Invariant Research.
+Additional Use Grant: You may use the Licensed Work for any purpose,
+                      including production use, provided the graph
+                      being verified contains fewer than 10,000 vertices.
+                      For graphs with 10,000 or more vertices, you must
+                      obtain a commercial license from the Licensor.
+Change Date:          2030-05-08
+Change License:       Apache License, Version 2.0
+
+For information about alternative licensing arrangements:
+https://invariant.pro/licensing
+
+The core SIGMA engine is patent-pending (U.S. App# 19/649,080).

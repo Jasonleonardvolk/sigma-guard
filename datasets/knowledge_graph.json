@@ -1,0 +1,37 @@
+{
+  "description": "Knowledge graph with 3 planted entity state contradictions",
+  "ground_truth": {
+    "contradiction_count": 3,
+    "contradictions": [
+      {"type": "status_conflict", "description": "Person is listed as both CEO and former CEO of the same company"},
+      {"type": "location_conflict", "description": "Company headquarters listed as both NYC and SF simultaneously"},
+      {"type": "ownership_conflict", "description": "Two entities each claim 60% ownership of the same subsidiary"}
+    ]
+  },
+  "vertices": [
+    {"id": "person_a", "label": "Alice_Chen", "claims": {"role": "CEO", "company": "TechCorp", "active": true, "start_date": "2023-01"}},
+    {"id": "person_a_record2", "label": "Alice_Chen_Archive", "claims": {"role": "former_CEO", "company": "TechCorp", "active": false, "end_date": "2024-06"}},
+    {"id": "techcorp", "label": "TechCorp", "claims": {"headquarters": "New York", "founded": 2018, "public": true}},
+    {"id": "techcorp_filing", "label": "TechCorp_10K", "claims": {"headquarters": "San Francisco", "fiscal_year": 2025}},
+    {"id": "parent_a", "label": "MegaHoldings", "claims": {"ownership_subsidiary_x": 0.60, "consolidated": true}},
+    {"id": "parent_b", "label": "GlobalVentures", "claims": {"ownership_subsidiary_x": 0.60, "consolidated": true}},
+    {"id": "subsidiary_x", "label": "SubsidiaryX", "claims": {"total_ownership_allocated": 1.20, "independent": false}},
+    {"id": "board", "label": "Board_of_Directors", "claims": {"current_ceo": "Alice_Chen", "ceo_status": "active"}},
+    {"id": "press_release", "label": "PR_20240615", "claims": {"announces": "ceo_transition", "new_ceo": "Bob_Smith"}},
+    {"id": "sec_filing", "label": "SEC_8K_2025", "claims": {"ceo": "Alice_Chen", "filing_date": "2025-03"}}
+  ],
+  "edges": [
+    {"source": "person_a", "target": "techcorp", "relation": "leads"},
+    {"source": "person_a_record2", "target": "techcorp", "relation": "formerly_led"},
+    {"source": "techcorp_filing", "target": "techcorp", "relation": "describes"},
+    {"source": "parent_a", "target": "subsidiary_x", "relation": "owns"},
+    {"source": "parent_b", "target": "subsidiary_x", "relation": "owns"},
+    {"source": "board", "target": "person_a", "relation": "appointed"},
+    {"source": "press_release", "target": "person_a_record2", "relation": "references"},
+    {"source": "sec_filing", "target": "person_a", "relation": "confirms"},
+    {"source": "sec_filing", "target": "techcorp", "relation": "filed_for"},
+    {"source": "person_a", "target": "person_a_record2", "relation": "same_entity"},
+    {"source": "parent_a", "target": "parent_b", "relation": "co_investors"},
+    {"source": "board", "target": "techcorp", "relation": "governs"}
+  ]
+}

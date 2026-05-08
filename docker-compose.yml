@@ -1,0 +1,36 @@
+# docker-compose.yml
+# Full stack: Memgraph + SIGMA Graph Guard
+#
+# Usage:
+#   docker compose up
+#
+# This starts:
+#   - Memgraph (in-memory graph database) on port 7687
+#   - Memgraph Lab (web UI) on port 3000
+#   - SIGMA query module mounted into Memgraph
+#
+# After starting, run:
+#   python examples/memgraph_trigger.py
+
+services:
+  memgraph:
+    image: memgraph/memgraph:latest
+    ports:
+      - "7687:7687"
+    volumes:
+      - ./sigma_guard:/usr/lib/memgraph/query_modules/sigma_guard
+    environment:
+      - MEMGRAPH_QUERY_MODULES_DIR=/usr/lib/memgraph/query_modules
+    command: >
+      --query-modules-directory=/usr/lib/memgraph/query_modules
+      --log-level=WARNING
+
+  memgraph-lab:
+    image: memgraph/lab:latest
+    ports:
+      - "3000:3000"
+    depends_on:
+      - memgraph
+    environment:
+      - QUICK_CONNECT_MG_HOST=memgraph
+      - QUICK_CONNECT_MG_PORT=7687

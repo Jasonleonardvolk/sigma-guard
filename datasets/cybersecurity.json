@@ -1,0 +1,43 @@
+{
+  "description": "Cybersecurity threat intel graph with 4 planted contradictions",
+  "ground_truth": {
+    "contradiction_count": 4,
+    "contradictions": [
+      {"type": "attribution_conflict", "description": "APT29 and APT28 both attributed as sole actor for the same campaign"},
+      {"type": "timeline_conflict", "description": "Malware variant dated before its parent strain was created"},
+      {"type": "infrastructure_conflict", "description": "C2 server listed as both active and decommissioned"},
+      {"type": "ioc_conflict", "description": "Same hash attributed to two different malware families"}
+    ]
+  },
+  "vertices": [
+    {"id": "campaign_alpha", "label": "Campaign_Alpha", "claims": {"sole_actor": "APT29", "start_date": "2025-03", "active": true}},
+    {"id": "apt29", "label": "APT29", "claims": {"attribution": "russia", "campaigns": ["alpha"], "sole_actor_alpha": true}},
+    {"id": "apt28", "label": "APT28", "claims": {"attribution": "russia", "campaigns": ["alpha"], "sole_actor_alpha": true}},
+    {"id": "malware_parent", "label": "DarkComet_v3", "claims": {"first_seen": "2025-06", "family": "DarkComet", "version": 3}},
+    {"id": "malware_child", "label": "DarkComet_v3.1", "claims": {"first_seen": "2025-04", "family": "DarkComet", "parent_version": 3}},
+    {"id": "c2_server_1", "label": "C2_185.42.x.x", "claims": {"status": "active", "last_seen": "2026-04", "decommissioned": false}},
+    {"id": "c2_report", "label": "ThreatReport_Q1", "claims": {"c2_185_status": "decommissioned", "decommission_date": "2026-01"}},
+    {"id": "hash_abc123", "label": "Hash_abc123def", "claims": {"malware_family": "Emotet", "confidence": 0.95}},
+    {"id": "hash_report", "label": "VirusTotal_Report", "claims": {"hash_abc123_family": "TrickBot", "confidence": 0.92}},
+    {"id": "victim_org", "label": "Victim_Corp", "claims": {"compromised": true, "sector": "financial"}},
+    {"id": "ioc_feed", "label": "STIX_Feed_v4", "claims": {"last_updated": "2026-04", "source": "osint"}},
+    {"id": "analyst_note", "label": "Analyst_Note_42", "claims": {"attribution_confidence": "high", "reviewed": true}}
+  ],
+  "edges": [
+    {"source": "apt29", "target": "campaign_alpha", "relation": "attributed_to"},
+    {"source": "apt28", "target": "campaign_alpha", "relation": "attributed_to"},
+    {"source": "malware_parent", "target": "malware_child", "relation": "parent_of"},
+    {"source": "campaign_alpha", "target": "malware_parent", "relation": "uses"},
+    {"source": "campaign_alpha", "target": "c2_server_1", "relation": "uses_infrastructure"},
+    {"source": "c2_report", "target": "c2_server_1", "relation": "reports_on"},
+    {"source": "hash_abc123", "target": "malware_parent", "relation": "identified_as"},
+    {"source": "hash_report", "target": "hash_abc123", "relation": "classifies"},
+    {"source": "campaign_alpha", "target": "victim_org", "relation": "targets"},
+    {"source": "ioc_feed", "target": "hash_abc123", "relation": "contains"},
+    {"source": "ioc_feed", "target": "c2_server_1", "relation": "contains"},
+    {"source": "analyst_note", "target": "campaign_alpha", "relation": "analyzes"},
+    {"source": "analyst_note", "target": "apt29", "relation": "confirms"},
+    {"source": "apt28", "target": "victim_org", "relation": "targets"},
+    {"source": "malware_child", "target": "c2_server_1", "relation": "beacons_to"}
+  ]
+}
