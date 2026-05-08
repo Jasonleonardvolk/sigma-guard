@@ -1,10 +1,12 @@
-# sigma-guard
+# SIGMA Guard
 
 Pre-commit contradiction detection for graph databases.
 
-SIGMA Guard detects structural contradictions that schema validation
-cannot catch. It verifies graph files, CI graph snapshots, and graph
-database writes before inconsistent state becomes trusted state.
+> Note: This project is unrelated to SigmaHQ detection rules. SIGMA Guard is a graph consistency verification layer from [Invariant Research](https://invariant.pro).
+
+SIGMA Guard is not a schema validator and not an ML judge. It checks
+whether graph claims can form one globally consistent structure under
+a configured sheaf model.
 
 - Deterministic structural verification
 - No ML judge, no probabilistic scoring
