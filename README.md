@@ -430,7 +430,28 @@ detection for graph databases. Invariant Research, 2026.
 
 ## License
 
-Business Source License 1.1 (BSL-1.1). Free to use up to 10,000 vertices.
+Business Source License 1.1 (BSL-1.1).
+
+Free local tier: up to 10,000 vertices / 100,000 edges.
+
+Enough to run real proofs of concept, evaluate contradiction detection,
+and test SIGMA Guard against your own graph data. No time limit. No
+cloud dependency. Unlimited local runs.
+
+Production-scale graphs, optimized incremental verification, enterprise
+receipt ledgers, and deployment support require a commercial license.
+Contact [Invariant Research](https://invariant.pro/licensing).
+
+| Tier | Vertices | Edges |
+|---|---|---|
+| Free | 10,000 | 100,000 |
+| Pro | 250,000 | 2,500,000 |
+| Team | 2,000,000 | 20,000,000 |
+| Enterprise | Custom | Custom |
+
+A vertex is any graph node submitted for verification. Edges are
+counted separately.
+
 The standalone verifier is released under Apache 2.0.
 
 ## About

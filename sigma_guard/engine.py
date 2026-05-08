@@ -129,7 +129,8 @@ class SigmaGuard:
         # Free tier check
         from sigma_guard.free_tier import check_free_tier
         vertices = data.get("vertices", [])
-        check_free_tier(len(vertices))
+        edges = data.get("edges", data.get("links", []))
+        check_free_tier(len(vertices), len(edges))
 
         # Try the full SIGMA core engine first.
         # If not available, fall back to the standalone verifier
