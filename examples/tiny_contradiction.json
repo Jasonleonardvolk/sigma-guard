@@ -1,0 +1,19 @@
+{
+  "description": "Minimal contradiction: two nodes disagree on one fact",
+  "ground_truth": {
+    "contradiction_count": 1,
+    "contradictions": [
+      {
+        "type": "supplier_conflict",
+        "description": "Policy says approved vendor is Supplier_A. Procurement says approved vendor is Supplier_B. Both cannot be true."
+      }
+    ]
+  },
+  "vertices": [
+    {"id": "Policy", "label": "Policy", "claims": {"approved_vendor": "Supplier_A"}},
+    {"id": "Procurement", "label": "Procurement", "claims": {"approved_vendor": "Supplier_B"}}
+  ],
+  "edges": [
+    {"source": "Policy", "target": "Procurement", "relation": "governs"}
+  ]
+}

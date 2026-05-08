@@ -1,7 +1,13 @@
 # examples/basic_usage.py
-# Simplest possible SIGMA Graph Guard usage.
+# Full pipeline demo: requires the SIGMA core engine.
 #
-# Run:
+# This example connects the open adapter layer to the SIGMA
+# verification engine. If you see "SIGMA core engine not found",
+# use the Docker image instead:
+#
+#   docker run jasonvolk/sigma-guard demo supply_chain
+#
+# To run locally with the engine on your PYTHONPATH:
 #   $env:PYTHONPATH = "C:\Dev\kha"
 #   python examples\basic_usage.py
 

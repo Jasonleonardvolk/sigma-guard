@@ -82,6 +82,8 @@ class SigmaGuard:
         self._vertex_map = {}    # label -> vertex_id
         self._vertex_labels = {} # vertex_id -> label
         self._edge_data = []     # list of (source_label, target_label, relation, value)
+        self._use_standalone = False
+        self._parsed_data = None
 
     # ------------------------------------------------------------------
     # Graph loading
@@ -124,21 +126,25 @@ class SigmaGuard:
 
     def _build_from_parsed(self, data: Dict[str, Any]) -> None:
         """Build the sheaf graph from parsed data."""
-        try:
-            from sigma.core.graph import SheafGraph
-            from sigma.core.sheaf import CellularSheaf
-            from sigma.core.cohomology import CohomologyComputer
-        except ImportError:
-            raise ImportError(
-                "SIGMA core engine not found. "
-                "Install the sigma package or use the Docker image: "
-                "docker run -p 8400:8400 invariant/sigma-guard"
-            )
-
         # Free tier check
         from sigma_guard.free_tier import check_free_tier
         vertices = data.get("vertices", [])
         check_free_tier(len(vertices))
+
+        # Try the full SIGMA core engine first.
+        # If not available, fall back to the standalone verifier
+        # (pure numpy/scipy, no SIGMA imports).
+        try:
+            from sigma.core.graph import SheafGraph
+            from sigma.core.sheaf import CellularSheaf
+            from sigma.core.cohomology import CohomologyComputer
+            self._use_standalone = False
+        except ImportError:
+            self._use_standalone = True
+            self._parsed_data = data
+            self._standalone_stalk_dim = self.stalk_dim
+            self._standalone_seed = self.seed
+            return
 
         rng = np.random.RandomState(self.seed)
         graph = SheafGraph()
@@ -277,14 +283,12 @@ class SigmaGuard:
         Returns a Verdict with all detected contradictions, their
         locations, severities, and cryptographic proofs.
 
-        Contradiction reporting uses two criteria (either is sufficient):
-          1. Energy criterion: edge carries >= 0.5% of total obstruction energy
-          2. Semantic criterion: adjacent vertices have shared claim keys
-             with differing values (explicit disagreement on the same concept)
-
-        Edges that fail both criteria are encoding noise, not structural
-        contradictions. They are excluded from the verdict.
+        Uses the full SIGMA engine if available, otherwise falls back
+        to the standalone verifier (pure numpy/scipy).
         """
+        if getattr(self, '_use_standalone', False):
+            return self._verify_standalone()
+
         if self._sheaf is None:
             raise RuntimeError("No graph loaded. Call load_json/load_dict first.")
 
@@ -306,7 +310,7 @@ class SigmaGuard:
 
         # Localize contradictions to edges and filter
         contradictions = []
-        if h1_dim > 0 and total_energy > 1e-8:
+        if total_energy > 1e-8:
             localized = self._cohomology.localize_obstruction(
                 section, top_k=50
             )
@@ -431,6 +435,9 @@ class SigmaGuard:
         Returns:
             WriteCheckResult indicating whether the write is safe.
         """
+        if getattr(self, '_use_standalone', False):
+            return self._check_write_standalone(source, target, relation, value)
+
         if self._sheaf is None:
             raise RuntimeError("No graph loaded. Call load_json/load_dict first.")
 
@@ -553,6 +560,300 @@ class SigmaGuard:
             src_vid, tgt_vid, created_src, created_tgt,
             source, target,
         )
+
+        return WriteCheckResult(
+            creates_contradiction=False,
+            elapsed_us=elapsed_us,
+        )
+
+    # ------------------------------------------------------------------
+    # Standalone fallback (pure numpy/scipy, no SIGMA core)
+    # ------------------------------------------------------------------
+
+    def _verify_standalone(self) -> Verdict:
+        """Verify using the standalone verifier (no SIGMA engine)."""
+        from sigma_guard.standalone_verifier import build_sheaf, compute_cohomology
+
+        t0 = time.perf_counter()
+
+        sheaf = build_sheaf(
+            self._parsed_data,
+            stalk_dim=self.stalk_dim,
+            seed=self.seed,
+        )
+        result = compute_cohomology(sheaf)
+
+        h1_dim = result["h1_dim"]
+        total_energy = result["total_energy"]
+        spectral_gap = result["spectral_gap"]
+        edge_energies = result["edge_energies"]
+
+        # Build vertex lookup for labels and claims
+        vertices = self._parsed_data.get("vertices", [])
+        v_index = {}
+        v_claims = []
+        v_labels = []  # display labels (title case)
+        for i, v in enumerate(vertices):
+            vid = v.get("id", v.get("label", str(i)))
+            label = v.get("label", vid)
+            v_index[vid] = i
+            v_claims.append(v.get("claims", {}))
+            v_labels.append(label)
+
+        # Build edge list (deduplicated, canonical orientation)
+        edges_raw = self._parsed_data.get("edges", [])
+        edge_pairs = []
+        seen_edges = set()
+        for e in edges_raw:
+            src = e.get("source", e.get("from", ""))
+            tgt = e.get("target", e.get("to", ""))
+            if src not in v_index or tgt not in v_index:
+                continue
+            si = v_index[src]
+            ti = v_index[tgt]
+            if si == ti:
+                continue
+            a, b = min(si, ti), max(si, ti)
+            if (a, b) not in seen_edges:
+                seen_edges.add((a, b))
+                edge_pairs.append((src, tgt, a, b))
+
+        # Localize contradictions
+        contradictions = []
+        if total_energy > 1e-8:
+            energy_floor = total_energy * ENERGY_REPORT_FLOOR
+
+            ranked = sorted(
+                enumerate(edge_energies), key=lambda x: -x[1]
+            )
+            for e_idx, energy in ranked:
+                if energy < 1e-8:
+                    break
+                if e_idx >= len(edge_pairs):
+                    continue
+
+                src_label, tgt_label, si, ti = edge_pairs[e_idx]
+                fraction = energy / total_energy
+
+                # Two-criteria filter
+                passes_energy = energy >= energy_floor
+
+                src_claims = v_claims[si] if si < len(v_claims) else {}
+                tgt_claims = v_claims[ti] if ti < len(v_claims) else {}
+                shared = set(src_claims.keys()) & set(tgt_claims.keys())
+                disagreements = [
+                    k for k in sorted(shared)
+                    if src_claims.get(k) != tgt_claims.get(k)
+                ]
+                has_disagreement = len(disagreements) > 0
+
+                if not passes_energy and not has_disagreement:
+                    continue
+
+                severity = _classify_severity(fraction)
+                u_label = v_labels[si] if si < len(v_labels) else src_label
+                v_label = v_labels[ti] if ti < len(v_labels) else tgt_label
+
+                proof_data = json.dumps({
+                    "edge": e_idx,
+                    "energy": energy,
+                    "h1_dim": h1_dim,
+                }).encode("utf-8")
+                proof_id = generate_proof_id(proof_data)
+
+                if disagreements:
+                    explanation = (
+                        "Structural contradiction (H^1 obstruction): "
+                        "'%s' and '%s' disagree on: %s. "
+                        "These claims are individually valid but structurally "
+                        "incompatible."
+                        % (u_label, v_label, ", ".join(disagreements))
+                    )
+                else:
+                    explanation = (
+                        "Structural contradiction (H^1 obstruction) between "
+                        "'%s' and '%s'. Energy=%.4f (%.1f%% of total)."
+                        % (u_label, v_label, energy, fraction * 100)
+                    )
+
+                contradictions.append(Contradiction(
+                    severity=severity,
+                    location=(u_label, v_label),
+                    edge_index=e_idx,
+                    energy=energy,
+                    energy_fraction=fraction,
+                    explanation=explanation,
+                    proof_id=proof_id,
+                ))
+
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+
+        n_vertices = sheaf["n_vertices"]
+        n_edges = sheaf["n_edges"]
+
+        root_data = json.dumps({
+            "h1_dim": h1_dim,
+            "total_energy": total_energy,
+            "contradictions": len(contradictions),
+            "vertices": n_vertices,
+            "edges": n_edges,
+        }).encode("utf-8")
+        root_proof_id = generate_proof_id(root_data)
+
+        certificate = {
+            "version": "sigma-guard-0.1.0",
+            "proof_id": root_proof_id,
+            "h1_dimension": h1_dim,
+            "spectral_gap": round(spectral_gap, 6),
+            "total_energy": round(total_energy, 6),
+            "contradiction_count": len(contradictions),
+            "graph_vertices": n_vertices,
+            "graph_edges": n_edges,
+            "stalk_dim": self.stalk_dim,
+            "algorithm": "sheaf_cohomology_h1",
+            "deterministic": True,
+            "engine": "standalone",
+        }
+
+        return Verdict(
+            has_contradictions=len(contradictions) > 0,
+            contradiction_count=len(contradictions),
+            contradictions=contradictions,
+            h1_dimension=h1_dim,
+            spectral_gap=spectral_gap,
+            total_energy=total_energy,
+            elapsed_ms=elapsed_ms,
+            proof_id=root_proof_id,
+            certificate=certificate,
+            graph_stats={"vertices": n_vertices, "edges": n_edges},
+        )
+
+    def _check_write_standalone(
+        self, source: str, target: str, relation: str, value: Any
+    ) -> WriteCheckResult:
+        """Check a write using the standalone verifier."""
+        import copy
+        from sigma_guard.standalone_verifier import build_sheaf, compute_cohomology
+
+        t0 = time.perf_counter()
+
+        # Build graph data with the proposed edge added
+        data_with_write = copy.deepcopy(self._parsed_data)
+
+        # Build lookup of existing vertex IDs AND labels
+        existing_ids = set()
+        id_to_label = {}
+        label_to_id = {}
+        for v in data_with_write.get("vertices", []):
+            vid = v.get("id", v.get("label", ""))
+            vlabel = v.get("label", vid)
+            existing_ids.add(vid)
+            existing_ids.add(vlabel)
+            id_to_label[vid] = vlabel
+            label_to_id[vlabel] = vid
+
+        # Resolve source/target to existing IDs
+        src_id = label_to_id.get(source, source)
+        tgt_id = label_to_id.get(target, target)
+
+        if src_id not in existing_ids and source not in existing_ids:
+            data_with_write["vertices"].append(
+                {"id": source, "label": source, "claims": {}}
+            )
+        if tgt_id not in existing_ids and target not in existing_ids:
+            data_with_write["vertices"].append(
+                {"id": target, "label": target, "claims": {}}
+            )
+
+        # Add the proposed edge using resolved IDs
+        data_with_write["edges"].append({
+            "source": src_id,
+            "target": tgt_id,
+            "relation": relation,
+        })
+
+        # Compute cohomology before and after
+        sheaf_before = build_sheaf(
+            self._parsed_data, stalk_dim=self.stalk_dim, seed=self.seed
+        )
+        result_before = compute_cohomology(sheaf_before)
+
+        sheaf_after = build_sheaf(
+            data_with_write, stalk_dim=self.stalk_dim, seed=self.seed
+        )
+        result_after = compute_cohomology(sheaf_after)
+
+        # Check semantic disagreement using both ID and label lookups
+        v_claims_map = {}
+        for v in data_with_write.get("vertices", []):
+            vid = v.get("id", v.get("label", ""))
+            vlabel = v.get("label", vid)
+            claims = v.get("claims", {})
+            v_claims_map[vid] = claims
+            v_claims_map[vlabel] = claims
+
+        src_claims = v_claims_map.get(source, v_claims_map.get(src_id, {}))
+        tgt_claims = v_claims_map.get(target, v_claims_map.get(tgt_id, {}))
+        shared = set(src_claims.keys()) & set(tgt_claims.keys())
+        disagreements = [
+            k for k in sorted(shared)
+            if src_claims.get(k) != tgt_claims.get(k)
+        ]
+        has_disagreement = len(disagreements) > 0
+
+        # Find energy of the new edge specifically
+        new_edge_energies = result_after["edge_energies"]
+        new_edge_idx = len(sheaf_before["edge_pairs"])  # last edge added
+        new_edge_energy = 0.0
+        if new_edge_idx < len(new_edge_energies):
+            new_edge_energy = new_edge_energies[new_edge_idx]
+
+        total_energy = sum(new_edge_energies)
+        energy_fraction = new_edge_energy / (total_energy + 1e-12)
+
+        creates_contradiction = (
+            (new_edge_energy > 0.5 and has_disagreement)
+            or energy_fraction > 0.05
+        )
+
+        elapsed_us = (time.perf_counter() - t0) * 1_000_000
+
+        if creates_contradiction:
+            proof_data = json.dumps({
+                "write_source": source,
+                "write_target": target,
+                "new_edge_energy": new_edge_energy,
+            }).encode("utf-8")
+            proof_id = generate_proof_id(proof_data)
+
+            severity = _classify_severity(energy_fraction)
+
+            if disagreements:
+                explanation = (
+                    "Write '%s' -> '%s' (%s) creates a structural "
+                    "contradiction. '%s' and '%s' disagree on: %s. "
+                    "New edge energy: %.4f (%.1f%% of total)."
+                    % (source, target, relation,
+                       source, target, ", ".join(disagreements),
+                       new_edge_energy, energy_fraction * 100)
+                )
+            else:
+                explanation = (
+                    "Write '%s' -> '%s' (%s) creates a structural "
+                    "contradiction. New edge energy: %.4f (%.1f%% of total)."
+                    % (source, target, relation,
+                       new_edge_energy, energy_fraction * 100)
+                )
+
+            return WriteCheckResult(
+                creates_contradiction=True,
+                severity=severity,
+                conflicting_nodes=[source, target],
+                energy_delta=new_edge_energy,
+                explanation=explanation,
+                proof_id=proof_id,
+                elapsed_us=elapsed_us,
+            )
 
         return WriteCheckResult(
             creates_contradiction=False,
