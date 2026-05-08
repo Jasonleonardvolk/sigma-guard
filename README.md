@@ -4,22 +4,20 @@ Pre-commit contradiction detection for graph databases.
 
 > Note: This project is unrelated to SigmaHQ detection rules. SIGMA Guard is a graph consistency verification layer from [Invariant Research](https://invariant.pro).
 
-SIGMA Guard is not a schema validator and not an ML judge. It checks
-whether graph claims can form one globally consistent structure under
-a configured sheaf model.
+Your graph can pass schema validation and still contradict itself.
+SIGMA Guard catches that before the write commits.
 
-- Deterministic structural verification
-- No ML judge, no probabilistic scoring
-- No GPU required
-- Cryptographic proof receipts
-- File, Memgraph, and Neo4j adapter layer
-- Free tier up to 10,000 vertices
+Runs locally with the included standalone verifier. No Docker, GPU,
+API key, or private engine required for the demo path.
 
 ## Try it in 60 seconds
 
 ```
 git clone https://github.com/Jasonleonardvolk/sigma-guard.git
 cd sigma-guard
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1       # Windows
+# source .venv/bin/activate        # Mac/Linux
 pip install -e .
 python examples/tiny_contradiction.py
 ```
@@ -34,13 +32,13 @@ Procurement says approved_vendor = Supplier_B
 
 Verdict: INCONSISTENT
 
-  [LOW] Policy <-> Procurement
-  Structural contradiction (H^1 obstruction): 'Policy' and
-  'Procurement' disagree on: approved_vendor. These claims are
-  individually valid but structurally incompatible.
-  Proof: sigma:proof:...
+  [CRITICAL] Policy <-> Procurement
+  Structural contradiction: 'Policy' and 'Procurement' disagree
+  on: approved_vendor. These claims are individually valid but
+  structurally incompatible.
+  Proof: sigma:proof:a1dc661d...
 
-Elapsed: 1.23ms
+Elapsed: 0.59ms
 ```
 
 Then run the full supply-chain demo:
@@ -49,175 +47,119 @@ Then run the full supply-chain demo:
 python examples/basic_usage.py
 ```
 
-Expected result: detects 7 structural contradictions, separates
-critical from low-energy tension, allows a safe write, blocks a
-contradictory write in under 1ms, emits proof IDs.
-
-### What just happened?
-
-The demo graph contains claims that are individually valid but
-globally incompatible. SIGMA Guard models those claims as a sheaf
-over the graph. When the claims cannot glue into one consistent
-global assignment, SIGMA returns an H^1 obstruction and a proof ID.
+Detects 7 structural contradictions, separates critical from
+low-energy tension, allows a safe write, blocks a contradictory
+write in under 1ms, emits proof IDs.
 
 ### With Docker
 
 ```
 docker run jasonvolk/sigma-guard demo supply_chain
-```
-
-```
-SIGMA Guard Demo: supply_chain
-==================================================
-
-SIGMA Guard v0.1.0
-========================================
-Graph: 12 vertices, 18 edges
-H^1 dimension: 54
-Spectral gap: 1.0000
-Total energy: 522.501789
-
-Contradictions found: 7
-
-[CRITICAL] Contradiction #1
-  Location: "Component_Y" <-> "Delivery_Plan"
-  Energy: 269.7760
-  Structural contradiction between 'Component_Y' and 'Delivery_Plan'.
-  Certificate: sigma:proof:acb3baee...
-
-[CRITICAL] Contradiction #2
-  Location: "Component_Y" <-> "Production_Q2"
-  Energy: 229.3921
-  Structural contradiction between 'Component_Y' and 'Production_Q2'.
-  Certificate: sigma:proof:8c219ff1...
-
-[LOW] Contradiction #6
-  Location: "Factory_East" <-> "Factory_West"
-  Structural contradiction: disagree on capacity_utilization, surge_capacity.
-  Certificate: sigma:proof:6e606d28...
-
-[LOW] Contradiction #7
-  Location: "Procurement" <-> "Risk_Register"
-  Structural contradiction: disagree on single_source_risk.
-  Certificate: sigma:proof:ded498c1...
-
-Verdict: INCONSISTENT
-Elapsed: 4.70ms
-```
-
-The demo graph contains planted supply-chain contradictions. SIGMA
-catches the dominant timeline conflicts as critical, identifies
-lower-energy structural inconsistencies, and names the specific
-disagreeing claim keys.
-
-Other demos:
-
-```
 docker run jasonvolk/sigma-guard demo cybersecurity
 docker run jasonvolk/sigma-guard demo knowledge_graph
-docker run jasonvolk/sigma-guard info
 ```
 
-### Bring your own graph
+## What am I looking at?
 
-Create a JSON file with vertices, claims, and edges:
+SIGMA Guard checks whether claims stored in a graph can all be
+true together.
+
+A normal schema validator can tell you whether a node has the
+right fields. SIGMA Guard checks whether the graph tells one
+consistent story.
+
+Example:
+
+- Policy says Component_X must use Supplier_A.
+- Procurement says Component_X must use Supplier_B.
+- Both claims are valid-looking facts.
+- Together, they conflict.
+
+SIGMA Guard detects that structural conflict and returns a verdict.
+
+### Three-minute explanation
+
+Imagine every node in a graph holds a small piece of a story.
+Each edge says how two pieces of the story should agree. If all
+local stories agree, the graph can be glued into one global story.
+If they cannot, the graph has a structural contradiction.
+
+SIGMA Guard detects that failure using sheaf cohomology:
+
+1. Each node gets a **stalk** (a vector space representing its claims)
+2. Each edge gets a **restriction map** (how adjacent claims relate)
+3. The **coboundary operator** measures disagreement across all edges
+4. **H^1 cohomology** identifies contradictions no local fix can resolve
+
+The **Dirichlet energy** on each edge tells you exactly where the
+contradiction lives. Every detected contradiction is a provable
+mathematical obstruction, not a statistical guess.
+
+## Example use cases
+
+### GraphRAG memory
+
+An agent memory graph says a customer wants annual billing. A later
+memory says the same customer rejected annual billing. SIGMA Guard
+can flag the contradiction before both memories are retrieved into
+the same answer.
+
+### Security graphs
+
+An asset is marked decommissioned, but the traffic graph shows
+active outbound connections. SIGMA Guard can flag inconsistent
+asset state.
+
+### Compliance graphs
+
+A policy says all admin accounts require MFA. An exception register
+says a privileged service account has no MFA. SIGMA Guard can flag
+the control contradiction.
+
+### Supply-chain graphs
+
+A component is marked sole-sourced to Supplier_A and also approved
+through Supplier_B. SIGMA Guard can flag the operational contradiction.
+
+## Bring your own graph
+
+Create `my_graph.json`:
 
 ```json
 {
   "vertices": [
-    {"id": "Policy", "claims": {"approved_vendor": "Supplier_A"}},
-    {"id": "Procurement", "claims": {"approved_vendor": "Supplier_B"}}
+    {"id": "A", "claims": {"status": "active"}},
+    {"id": "B", "claims": {"status": "inactive"}}
   ],
   "edges": [
-    {"source": "Policy", "target": "Procurement", "relation": "governs"}
+    {"source": "A", "target": "B", "relation": "same_entity"}
   ]
 }
 ```
 
-Then:
+Run:
 
 ```
 python -m sigma_guard.standalone_verifier --graph my_graph.json
 ```
 
-## Verify it yourself
+See [docs/graph_format.md](docs/graph_format.md) for the full format
+reference.
 
-The standalone verifier recomputes sheaf cohomology from scratch
-using only numpy and scipy. No SIGMA engine. No trust required.
+## When not to use SIGMA Guard
 
-```
-git clone https://github.com/Jasonleonardvolk/sigma-guard.git
-cd sigma-guard
-pip install numpy scipy
-python -m sigma_guard.standalone_verifier --graph datasets/supply_chain.json
-```
+SIGMA Guard is not the right tool for:
 
-```
-SIGMA Independent Verifier
-========================================
-Graph: datasets/supply_chain.json
-Vertices: 12
-Edges: 18
-Stalk dim: 8
+- Simple schema validation (use database constraints)
+- Checking required fields (use SHACL or JSON Schema)
+- Fuzzy semantic similarity (use embeddings)
+- LLM answer grading (use an evaluation framework)
+- Generic data cleaning (use a data quality tool)
 
-H^0 dimension: 6 (consistent states)
-H^1 dimension: 54 (structural obstructions)
-Coboundary rank: 90
-Total Dirichlet energy: 522.501789
-Spectral gap: 1.0000
+Use SIGMA Guard when graph facts are individually valid but may be
+globally inconsistent.
 
-Verdict: INCONSISTENT
-This graph contains structural contradictions.
-
-Top obstruction edges:
-  Edge 5: component_y <-> delivery_plan  energy=269.7760 (51.6%)
-  Edge 4: component_y <-> production_q2  energy=229.3921 (43.9%)
-  Edge 12: factory_east <-> risk_register  energy=5.3582 (1.0%)
-```
-
-This output was generated by `standalone_verifier.py`, which is
-released under Apache 2.0. Read the source. Run it. Audit the math.
-Source: [sigma_guard/standalone_verifier.py](sigma_guard/standalone_verifier.py)
-
-## Why now
-
-Graph databases are increasingly used as operational memory for AI agents,
-security systems, compliance workflows, supply chains, and enterprise
-knowledge graphs. Those systems do not just need faster retrieval. They
-need a deterministic consistency gate before corrupted graph state becomes
-trusted state.
-
-## What this does
-
-Every graph database in production has **silent graph corruption**:
-contradictory facts coexist and no system flags them. Schema validation
-(SHACL, constraints, triggers) catches missing fields and type errors.
-It cannot catch two facts that are individually valid but structurally
-incompatible.
-
-SIGMA uses **sheaf cohomology** (specifically, H^1 obstructions over
-cellular decompositions) to detect structural contradictions. When two
-nodes in your graph make claims that cannot coexist, SIGMA finds them,
-locates them, measures their severity, and produces a cryptographic
-proof receipt.
-
-No ML confidence scores. No probabilistic judge. A graph is either
-consistent under the configured sheaf constraints or it is not.
-
-## What SIGMA does not do
-
-SIGMA does not replace database schema validation. It does not check
-whether a field is missing, whether a type is invalid, or whether a
-Cypher query is well formed.
-
-SIGMA checks a different failure mode: facts that are individually
-valid but globally incompatible.
-
-It does not use an LLM to judge correctness. The verdict is produced
-by deterministic graph verification against the configured consistency
-model.
-
-## Architecture boundary
+## Architecture
 
 This repository contains the open integration layer:
 
@@ -228,63 +170,19 @@ This repository contains the open integration layer:
 - Proof receipt schemas
 - CLI
 
-The full SIGMA engine is available via Docker for production
-performance. Without Docker, the integration layer falls back to
-the standalone verifier (pure numpy/scipy). Both paths produce
-identical mathematical results. The Docker path is faster on
-large graphs because it uses the optimized cellular incremental
-architecture.
+### Engine modes
 
-**Clone the repo (standalone math, works everywhere):**
-- `pip install -e .`
-- `python examples/tiny_contradiction.py`
-- `python examples/basic_usage.py`
-- `python -m sigma_guard.standalone_verifier --graph datasets/supply_chain.json`
-- `pytest tests/`
+| Mode | Purpose | Availability |
+|---|---|---|
+| Standalone verifier | Pure numpy/scipy verification for demos, tests, and reproducible examples | Included in this repo |
+| Full SIGMA engine | Optimized cellular incremental architecture for production-scale verification | Available via Docker or direct installation |
 
-**Docker (full engine, production performance):**
-- `docker run jasonvolk/sigma-guard demo supply_chain`
-- `docker run jasonvolk/sigma-guard verify /data/my_graph.json`
-- `docker run -p 8400:8400 jasonvolk/sigma-guard serve`
+The public repo is runnable without the full engine. `pip install -e .`
+then `python examples/tiny_contradiction.py` works on a clean machine
+with only Python, numpy, and scipy.
 
-## Docker usage
-
-```
-# Run a demo
-docker run jasonvolk/sigma-guard demo supply_chain
-
-# Show version and tier info
-docker run jasonvolk/sigma-guard info
-
-# Verify your own graph file
-docker run -v $(pwd):/data jasonvolk/sigma-guard verify /data/my_graph.json
-
-# Start the API server
-docker run -p 8400:8400 jasonvolk/sigma-guard serve
-
-# Full stack: Memgraph + SIGMA Guard
-docker compose up
-```
-
-### API server
-
-```
-docker run -p 8400:8400 jasonvolk/sigma-guard serve
-```
-
-```
-curl -X POST http://localhost:8400/verify \
-  -H "Content-Type: application/json" \
-  -d '{
-    "vertices": [
-      {"id": "a", "label": "Node_A", "claims": {"status": "active"}},
-      {"id": "b", "label": "Node_B", "claims": {"status": "inactive"}}
-    ],
-    "edges": [
-      {"source": "a", "target": "b", "relation": "same_entity"}
-    ]
-  }'
-```
+When the full SIGMA engine is available on the Python path, SIGMA Guard
+uses it automatically for faster performance on large graphs.
 
 ## Memgraph integration
 
@@ -297,19 +195,6 @@ from sigma_guard.adapters.memgraph import MemgraphGuard
 
 mg = MemgraphGuard(host="localhost", port=7687)
 mg.install_trigger()
-
-# Every CREATE and SET operation now passes through SIGMA.
-# Contradictory writes are rejected with a proof receipt.
-```
-
-Or register the trigger manually via Cypher:
-
-```
-CALL mg.create_trigger(
-    "sigma_guard",
-    "BEFORE COMMIT",
-    "CALL sigma_guard.verify_transaction($createdVertices, $createdEdges, $setVertexProperties)"
-) YIELD *;
 ```
 
 See [examples/memgraph_trigger.py](examples/memgraph_trigger.py) for the
@@ -317,101 +202,64 @@ full working example with Docker Compose.
 
 ## Neo4j integration
 
-The Neo4j adapter runs as a guarded write wrapper. Instead of sending
-writes directly to Neo4j, route writes through `Neo4jGuard.execute()`
-so SIGMA can verify the proposed change before commit.
+The Neo4j adapter runs as a guarded write wrapper. Route writes through
+`Neo4jGuard.execute()` so SIGMA can verify before commit.
 
 ```python
 from sigma_guard.adapters.neo4j import Neo4jGuard
 
 guard = Neo4jGuard(uri="bolt://localhost:7687", auth=("neo4j", "password"))
-
-guard.execute("""
-    CREATE (:Supplier {name: $name, sole_source: true})
-""", name="Supplier_A")
+guard.execute("CREATE (:Supplier {name: $name, sole_source: true})", name="Supplier_A")
 ```
 
-Native Neo4j transaction listeners require a JVM plugin. That deeper
-integration is planned separately.
+Native Neo4j transaction listeners require a JVM plugin, planned separately.
+See [examples/neo4j_hook.py](examples/neo4j_hook.py).
 
-See [examples/neo4j_hook.py](examples/neo4j_hook.py) for the full example.
+## Independent verification
 
-## How it works
+The standalone verifier recomputes sheaf cohomology from scratch
+using only numpy and scipy. No SIGMA engine. No trust required.
 
-SIGMA constructs a **cellular sheaf** over your graph:
+```
+python -m sigma_guard.standalone_verifier --graph datasets/supply_chain.json
+```
 
-1. Each node gets a **stalk** (a vector space representing its claims)
-2. Each edge gets a **restriction map** (a linear map expressing how
-   adjacent claims should relate)
-3. The **coboundary operator** measures disagreement across all edges
-4. **H^1 cohomology** (the cokernel of the coboundary) identifies
-   structural contradictions that no local fix can resolve
-
-When H^1 is non-trivial, the graph contains contradictions under the
-configured consistency model. The **Dirichlet energy** on each edge
-localizes exactly where they are. The **spectral gap** of the sheaf
-Laplacian measures overall graph health.
-
-This is not heuristic pattern matching. This is algebraic topology
-applied to data consistency. Every detected contradiction is a provable
-mathematical obstruction, not a statistical guess.
+Released under Apache 2.0 so anyone can audit it.
+Source: [sigma_guard/standalone_verifier.py](sigma_guard/standalone_verifier.py)
 
 ## Performance
 
 | Metric | Value |
 |---|---|
-| Latency per write (incremental) | 63 microseconds |
-| Latency per query | 13 microseconds |
+| Latency per write (incremental, full engine) | 63 microseconds |
+| Latency per query (full engine) | 13 microseconds |
 | Scaling exponent | 0.19 (sub-linear) |
 | Validated scale | 1,000,000 vertices |
 | Speedup vs full recomputation | 10,504x |
 | ML required | None |
 | GPU required | None |
 
-Benchmark context:
-
-- Hardware: Intel i9-13900H, 64 GB RAM, no GPU used
-- Baseline: full sheaf cohomology recomputation (O(n^3) dense SVD) on
-  every graph mutation. SIGMA's cellular incremental architecture
-  achieves O(n) by localizing recomputation to affected cells.
-- Dataset: synthetic cellular graph workloads plus Enron email corpus
-  (639 cells, 30.3s full run)
-- Scaling validated across seeds 42, 137, 2718 with drift=0
-- Sub-linear scaling (exponent 0.19): the cost per edit grows slower
-  than the graph. At 1M vertices, each edit touches only the affected
-  cell in the cellular decomposition, not the full graph.
-- Full benchmark details: [benchmarks/README.md](benchmarks/README.md)
+Benchmark context: Intel i9-13900H, 64 GB RAM, no GPU. Baseline is
+full sheaf cohomology recomputation (O(n^3) dense SVD) per mutation.
+SIGMA's cellular incremental architecture achieves O(n). Details:
+[benchmarks/README.md](benchmarks/README.md)
 
 ## Proof receipt shape
 
 ```json
 {
   "verdict": "INCONSISTENT",
-  "proof_id": "sigma:proof:a3f8c2d1-7b4e-4f9a-b8c3-1d2e3f4a5b6c",
-  "engine": "sigma-guard-0.1.0",
+  "proof_id": "sigma:proof:a3f8c2d1...",
   "algorithm": "sheaf_cohomology_h1",
   "deterministic": true,
-  "graph": {
-    "vertices": 12,
-    "edges": 18
-  },
-  "h1_dimension": 3,
-  "spectral_gap": 0.393,
-  "total_energy": 2.4891,
   "contradictions": [
     {
       "severity": "CRITICAL",
       "location": ["Supplier_A", "Supplier_B"],
       "energy": 0.9412,
-      "energy_fraction": 0.378,
-      "explanation": "Structural contradiction (H^1 obstruction): 'Supplier_A' and 'Supplier_B' disagree on: sole_source_component_x."
+      "explanation": "disagree on: sole_source_component_x"
     }
-  ],
-  "signature": {
-    "algorithm": "Ed25519",
-    "public_key": "a1b2c3d4...",
-    "value": "9a8b7c6d..."
-  }
+  ]
 }
 ```
 
@@ -425,42 +273,96 @@ Benchmark context:
 
 ## CI usage
 
-Use SIGMA as a graph consistency gate in CI:
-
 ```yaml
-# GitHub Actions (Docker-based)
+# GitHub Actions
 - name: Graph consistency check
   run: |
     docker run -v ${{ github.workspace }}:/data \
       jasonvolk/sigma-guard verify /data/graph_snapshot.json
 ```
 
-```
-# PowerShell
-docker run -v ${PWD}:/data jasonvolk/sigma-guard verify /data/graph_snapshot.json
-if ($LASTEXITCODE -ne 0) {
-    throw "Graph contradiction check failed."
-}
-```
-
-```
-# Bash
-docker run -v $(pwd):/data jasonvolk/sigma-guard verify /data/graph_snapshot.json || exit 1
-```
-
 ## Datasets
 
-The `datasets/` folder contains example graphs with planted contradictions:
+- `datasets/supply_chain.json` - 12 vertices, 18 edges, 3 planted contradiction families
+- `datasets/cybersecurity.json` - 12 vertices, 15 edges, 4 planted contradictions
+- `datasets/knowledge_graph.json` - 10 vertices, 12 edges, 3 planted contradictions
+- `examples/tiny_contradiction.json` - 2 vertices, 1 edge, 1 obvious contradiction
 
-- `supply_chain.json` - 12 vertices, 18 edges, 3 planted contradictions
-  (sole-source conflict, timeline conflict, capacity conflict)
-- `cybersecurity.json` - 12 vertices, 15 edges, 4 planted contradictions
-  (attribution conflict, timeline conflict, infrastructure conflict, IOC conflict)
-- `knowledge_graph.json` - 10 vertices, 12 edges, 3 planted contradictions
-  (CEO status conflict, HQ location conflict, ownership conflict)
+Each dataset includes `ground_truth` with descriptions of every planted contradiction.
 
-Each dataset includes a `ground_truth` block with descriptions of every
-planted contradiction so you can verify SIGMA catches them.
+## FAQ
+
+### Is this an LLM?
+
+No. SIGMA Guard does not ask a model whether the graph looks right.
+
+### Is this schema validation?
+
+No. Schema validation checks local shape. SIGMA Guard checks global consistency.
+
+### What is sheaf cohomology doing here?
+
+It models whether local claims attached to graph nodes can glue into
+one consistent global assignment. If they cannot, SIGMA reports a
+structural obstruction.
+
+### Does this prove my real-world data is true?
+
+No. It proves consistency under the configured graph model. Bad
+modeling can still produce unhelpful results.
+
+### Do I need the private SIGMA engine?
+
+No for demos and local verification. The repo includes a standalone
+verifier path. The full engine is for optimized production-scale
+deployment.
+
+### Does this work with Neo4j and Memgraph?
+
+The repo includes adapter examples. Memgraph supports a before-commit
+hook path. Neo4j currently uses a guarded write wrapper; a native JVM
+plugin is planned separately.
+
+## How SIGMA Guard differs
+
+| Tool type | Checks | Limitation |
+|---|---|---|
+| Schema validation | Field shape, labels, types | Does not detect global contradiction |
+| Database constraints | Local rule violations | Usually local or procedural |
+| SHACL | RDF constraint validation | Rule-based, not cohomological |
+| LLM judge | Plausibility of output | Probabilistic and prompt-sensitive |
+| SIGMA Guard | Structural graph consistency | Depends on configured graph model |
+
+## Known limitations
+
+- The standalone verifier is designed for demos, tests, and small/medium graphs.
+- Production-scale cellular incremental verification uses the full SIGMA engine.
+- Neo4j native transaction listeners require a JVM plugin; the current adapter uses a guarded write wrapper.
+- The quality of results depends on the quality of the configured claims and restrictions.
+- Current examples use simple claim keys; richer domain models require richer sheaf construction.
+
+## Roadmap
+
+- [ ] Benchmark reproduction scripts
+- [ ] Memgraph block/warn mode demo
+- [ ] Native Neo4j JVM plugin
+- [ ] NetworkX importer
+- [ ] FalkorDB adapter
+- [ ] GraphRAG memory contradiction demo
+- [ ] Security graph demo
+- [ ] Compliance graph demo
+- [ ] `--explain` flag for plain-English output
+- [ ] `--fail-on` flag for CI severity filtering
+
+## Design principles
+
+1. Verification is not generation.
+2. A graph can be valid locally and inconsistent globally.
+3. The verifier is deterministic.
+4. Every verdict is reproducible.
+5. Human-readable explanations matter.
+6. The open adapter layer should be easy to inspect.
+7. The production engine can be optimized without changing the public interface.
 
 ## API reference
 
@@ -482,11 +384,11 @@ result = guard.check_write(...) # Incremental single-write check
 verdict.has_contradictions       # bool
 verdict.contradiction_count      # int
 verdict.contradictions           # List[Contradiction]
-verdict.h1_dimension             # int (dim of obstruction space)
-verdict.spectral_gap             # float (graph health, 0-1)
+verdict.h1_dimension             # int
+verdict.spectral_gap             # float (0-1)
 verdict.elapsed_ms               # float
-verdict.proof_id                 # str (cryptographic proof ID)
-verdict.certificate              # dict (full signed certificate)
+verdict.proof_id                 # str
+verdict.certificate              # dict
 ```
 
 ### Contradiction
@@ -494,16 +396,13 @@ verdict.certificate              # dict (full signed certificate)
 ```python
 c.severity          # "CRITICAL" | "HIGH" | "MODERATE" | "LOW"
 c.location          # (vertex_label_a, vertex_label_b)
-c.edge_index        # int
-c.energy            # float (Dirichlet energy at this edge)
-c.energy_fraction   # float (fraction of total obstruction energy)
-c.explanation       # str (human-readable)
+c.energy            # float
+c.energy_fraction   # float
+c.explanation       # str
 c.proof_id          # str
 ```
 
 ## Custom adapters
-
-Write your own adapter for any graph database:
 
 ```python
 from sigma_guard.adapters.base import GraphDatabaseAdapter
@@ -511,10 +410,8 @@ from sigma_guard.adapters.base import GraphDatabaseAdapter
 class MyDatabaseAdapter(GraphDatabaseAdapter):
     def connect(self, **kwargs):
         ...
-
     def install_trigger(self):
         ...
-
     def on_write(self, vertices, edges, properties):
         verdict = self.guard.check_write(vertices, edges, properties)
         if verdict.creates_contradiction:
@@ -522,20 +419,23 @@ class MyDatabaseAdapter(GraphDatabaseAdapter):
         return True
 ```
 
+## Citation
+
+If you reference SIGMA Guard:
+
+```
+Jason Leonard Volk. SIGMA Guard: deterministic structural contradiction
+detection for graph databases. Invariant Research, 2026.
+```
+
 ## License
 
-Business Source License 1.1 (BSL-1.1).
-
-Free to use for evaluation, development, and production workloads
-up to 10,000 vertices. Above 10,000 vertices, contact
-[Invariant Research](https://invariant.pro) for a commercial license.
-
+Business Source License 1.1 (BSL-1.1). Free to use up to 10,000 vertices.
 The standalone verifier is released under Apache 2.0.
 
 ## About
 
 Built by [Invariant Research](https://invariant.pro).
 
-Related work: SATYA applies the same deterministic verification
-philosophy to hallucination detection in legal, compliance, and
-citation-audit workflows.
+Related work: SATYA applies the same deterministic verification philosophy
+to hallucination detection in legal, compliance, and citation-audit workflows.
