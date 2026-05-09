@@ -347,6 +347,7 @@ plugin is planned separately.
 
 ## Roadmap
 
+- [x] MCP server for agent integration
 - [ ] Benchmark reproduction scripts
 - [ ] Memgraph block/warn mode demo
 - [ ] Native Neo4j JVM plugin
@@ -422,6 +423,34 @@ class MyDatabaseAdapter(GraphDatabaseAdapter):
             raise ContradictionError(verdict)
         return True
 ```
+
+## MCP server
+
+SIGMA Guard runs as an MCP (Model Context Protocol) server.
+Any MCP-compatible agent can call it as a verification tool.
+
+```
+pip install sigma-guard[mcp]
+sigma-guard-mcp
+```
+
+Tools exposed: `verify_graph`, `verify_claims`, `check_write`.
+
+Add to your agent's MCP config:
+
+```json
+{
+    "mcpServers": {
+        "sigma-guard": {
+            "command": "sigma-guard-mcp",
+            "args": []
+        }
+    }
+}
+```
+
+Works with Hermes Agent, Claude Desktop, and any MCP-compatible framework.
+See [docs/mcp_server.md](docs/mcp_server.md) for the full integration guide.
 
 ## LLM agent integration
 

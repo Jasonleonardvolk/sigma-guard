@@ -129,15 +129,19 @@ and "backup storage uses unencrypted S3 buckets" cannot both be true.
 
 ## For agent frameworks
 
-If your agent framework supports external tool calls or pre-emission
-hooks, SIGMA Guard can run as a verification step before final answer
-delivery.
+**Recommended: use the MCP server.** See [docs/mcp_server.md](mcp_server.md).
 
-The integration question for any agent framework is:
+```
+pip install sigma-guard[mcp]
+sigma-guard-mcp
+```
 
-"Can the agent call an external verifier before final answer emission?"
+Three tools: `verify_graph`, `verify_claims`, `check_write`.
+Works with Hermes Agent, Claude Desktop, and any MCP-compatible agent.
+No code changes to the agent required.
 
-If yes, SIGMA Guard is a single function call:
+If your agent framework does not support MCP, the integration is
+still a single function call:
 
 ```python
 verdict = guard.verify()

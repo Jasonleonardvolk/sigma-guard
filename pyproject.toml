@@ -42,14 +42,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mcp = ["mcp>=1.0"]
 memgraph = ["gqlalchemy>=1.0"]
 neo4j = ["neo4j>=5.0"]
-all = ["gqlalchemy>=1.0", "neo4j>=5.0"]
+all = ["mcp>=1.0", "gqlalchemy>=1.0", "neo4j>=5.0"]
 dev = ["pytest>=7.0", "pytest-cov"]
 
 [project.scripts]
 sigma-guard = "sigma_guard.cli:main"
 sigma-verify = "sigma_guard.standalone_verifier:main"
+sigma-guard-mcp = "sigma_guard.mcp_server:main"
 
 [project.urls]
 Homepage = "https://invariant.pro"

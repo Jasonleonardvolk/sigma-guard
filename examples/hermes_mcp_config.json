@@ -1,0 +1,9 @@
+{
+    "mcpServers": {
+        "sigma-guard": {
+            "command": "sigma-guard-mcp",
+            "args": [],
+            "env": {}
+        }
+    }
+}
