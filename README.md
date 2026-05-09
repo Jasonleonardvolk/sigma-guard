@@ -7,6 +7,9 @@ Pre-commit contradiction detection for graph databases.
 Your graph can pass schema validation and still contradict itself.
 SIGMA Guard catches that before the write commits.
 
+SIGMA turns global contradiction detection from an audit into a
+write-time primitive.
+
 Runs locally with the included standalone verifier. No Docker, GPU,
 API key, or private engine required for the demo path.
 
@@ -240,9 +243,10 @@ Source: [sigma_guard/standalone_verifier.py](sigma_guard/standalone_verifier.py)
 | GPU required | None |
 
 Benchmark context: Intel i9-13900H, 64 GB RAM, no GPU. Baseline is
-full sheaf cohomology recomputation (O(n^3) dense SVD) per mutation.
-SIGMA's cellular incremental architecture achieves O(n). Details:
-[benchmarks/README.md](benchmarks/README.md)
+global sheaf cohomology recomputation. SIGMA's cellular architecture
+localizes recomputation to bounded cells: O(n) batch assembly and
+O(1) amortized dirty-cell streaming under bounded-cell assumptions.
+Details: [benchmarks/README.md](benchmarks/README.md)
 
 ## Proof receipt shape
 
@@ -418,6 +422,17 @@ class MyDatabaseAdapter(GraphDatabaseAdapter):
             raise ContradictionError(verdict)
         return True
 ```
+
+## LLM agent integration
+
+SIGMA Guard is not just for graph databases. Any LLM that produces
+structured claims can be verified before those claims are trusted.
+
+The model does not matter. OpenAI, Anthropic, Google, Meta, Mistral,
+Nous/Hermes, or any local model. SIGMA verifies the output, not the model.
+
+See [docs/llm_agent_integration.md](docs/llm_agent_integration.md) for
+the full integration guide, code examples, and domain-specific use cases.
 
 ## Citation
 
