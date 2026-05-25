@@ -1,17 +1,87 @@
 # SIGMA Guard
 
-Pre-commit contradiction detection for graph databases.
+**Structural verification for graph databases.**
 
-> Note: This project is unrelated to SigmaHQ detection rules. SIGMA Guard is a graph consistency verification layer from [Invariant Research](https://invariant.pro).
-
-Your graph can pass schema validation and still contradict itself.
+Your graph can pass every schema check and still contradict itself.
 SIGMA Guard catches that before the write commits.
 
-SIGMA turns global contradiction detection from an audit into a
-write-time primitive.
+**5M vertices. 35 microseconds. Zero drift. Zero ML.**
 
-Runs locally with the included standalone verifier. No Docker, GPU,
-API key, or private engine required for the demo path.
+> Note: This project is unrelated to SigmaHQ detection rules.
+> SIGMA Guard is a graph consistency verification layer from
+> [Invariant Research](https://invariant.pro).
+
+## The problem no one else solves
+
+Schema validators check shape. Constraint engines check rules.
+Neither one checks whether the graph tells one consistent story.
+
+Two nodes can individually pass every validation and still
+contradict each other. In a knowledge graph, that is a
+hallucination waiting to happen. In a compliance graph, that
+is a regulatory finding. In an agent memory graph, that is
+a wrong answer your users will see.
+
+SIGMA Guard detects structural contradictions using sheaf
+cohomology: a mathematical framework that proves whether
+local claims can glue into one globally consistent assignment.
+If they cannot, you get the exact edges where the contradiction
+lives, a severity ranking, and a deterministic proof receipt.
+
+Not a probability. Not a confidence score. A proof.
+
+## Why this matters now
+
+Every AI system that builds or mutates a graph needs this.
+
+- **GraphRAG pipelines** retrieve contradictory facts into the same
+  context window. SIGMA Guard catches that before retrieval.
+- **Agentic systems** accumulate state across tool calls, memory
+  writes, and dependency insertions. SIGMA Guard verifies each
+  mutation before commit.
+- **Legal and compliance AI** must prove their outputs are
+  structurally sound. SIGMA Guard produces cryptographic
+  verification receipts on every check.
+- **Knowledge graph ETL** merges data from multiple sources that
+  may disagree. SIGMA Guard finds the disagreements that schema
+  validation misses.
+
+Colorado SB 24-205 and EU AI Act Article 15 require documentation
+of AI system reliability. A SIGMA Guard receipt is a compliance
+artifact.
+
+## Performance
+
+This is not a research prototype. This is production infrastructure.
+
+| Metric | Value |
+|---|---|
+| Per-edit latency (median) | **35 microseconds** |
+| Per-query latency | 13 microseconds |
+| Validated scale | **5,000,000 vertices** |
+| Cells at 5M | 25,473 |
+| Scaling exponent | 0.19 (sub-linear in graph size) |
+| Cohomology drift | **0 (mathematically exact)** |
+| RestrictionStore memory at 5M | 0.50 MB |
+| ML required | None |
+| GPU required | None |
+| Training data required | None |
+
+Single machine. Intel i9-13900H, 64 GB RAM. No cluster. No cloud
+dependency. Cellular Mayer-Vietoris streaming architecture reduces
+per-edit verification from O(n^3) to O(1) amortized. Every edit
+touches only the bounded local cell, not the global graph.
+
+Classical sheaf cohomology recomputation costs O(n^3) per mutation.
+At 5M vertices, that is mass-of-the-sun expensive. SIGMA does it
+in 35 microseconds because it never recomputes the global matrix.
+The partition localizes every edit to a constant-size subproblem.
+The rest of the graph stays cached. Zero drift. Exact agreement
+with batch recomputation at every checkpoint.
+
+That is not an approximation. That is a theorem.
+
+Benchmark details: [benchmarks/README.md](benchmarks/README.md)
 
 ## Try it in 60 seconds
 
@@ -229,24 +299,6 @@ python -m sigma_guard.standalone_verifier --graph datasets/supply_chain.json
 
 Released under Apache 2.0 so anyone can audit it.
 Source: [sigma_guard/standalone_verifier.py](sigma_guard/standalone_verifier.py)
-
-## Performance
-
-| Metric | Value |
-|---|---|
-| Latency per write (incremental, full engine) | 63 microseconds |
-| Latency per query (full engine) | 13 microseconds |
-| Scaling exponent | 0.19 (sub-linear) |
-| Validated scale | 1,000,000 vertices |
-| Speedup vs full recomputation | 10,504x |
-| ML required | None |
-| GPU required | None |
-
-Benchmark context: Intel i9-13900H, 64 GB RAM, no GPU. Baseline is
-global sheaf cohomology recomputation. SIGMA's cellular architecture
-localizes recomputation to bounded cells: O(n) batch assembly and
-O(1) amortized dirty-cell streaming under bounded-cell assumptions.
-Details: [benchmarks/README.md](benchmarks/README.md)
 
 ## Proof receipt shape
 
