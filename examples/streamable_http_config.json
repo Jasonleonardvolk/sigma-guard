@@ -1,0 +1,8 @@
+{
+    "mcpServers": {
+        "sigma-guard": {
+            "type": "streamable-http",
+            "url": "http://localhost:8401/mcp"
+        }
+    }
+}

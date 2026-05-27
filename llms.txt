@@ -1,0 +1,43 @@
+# Invariant Research
+
+> Deterministic structural verification for AI systems.
+
+SIGMA Guard detects structural contradictions in knowledge graphs, agent state, and LLM output using cellular sheaf cohomology. Every verdict is deterministic, reproducible, and cryptographically signed. Zero ML. Zero GPU. 35 microseconds per edit at 5 million vertices.
+
+## Products
+
+- [SIGMA Guard](https://invariant.pro/docs/sigma-guard): Structural contradiction detection for graph databases and knowledge graphs. Available as a Python library, CLI, FastAPI endpoint, and MCP server.
+- [SATYA](https://invariant.pro/satya): Hallucination detection layer for legal, compliance, and citation-audit workflows. Built on top of SIGMA.
+
+## MCP Server
+
+SIGMA Guard runs as an MCP (Model Context Protocol) server exposing three tools:
+
+- verify_graph: Detect structural contradictions in knowledge graphs
+- verify_claims: Verify LLM output claims for structural consistency
+- check_write: Pre-commit gate for graph mutations
+
+Install: `pip install sigma-guard[mcp]`
+Run: `sigma-guard-mcp` (stdio) or `sigma-guard-mcp --transport streamable-http` (remote)
+
+## Integration
+
+- PyPI: https://pypi.org/project/sigma-guard/
+- GitHub: https://github.com/invariant-research/sigma-guard
+- MCP docs: https://invariant.pro/docs/sigma-guard/mcp
+- FastAPI endpoint: https://invariant.pro/api/verify
+- Verification receipts: https://invariant.pro/receipts
+
+## Use cases
+
+- GraphRAG contradiction detection before retrieval
+- Agent memory verification across tool calls
+- Knowledge graph ETL merge validation
+- Legal and compliance document audit
+- Pre-commit write guards for Memgraph and Neo4j
+- Agent debt detection (accumulated contradictions in agent state)
+
+## Contact
+
+- Email: jason@invariant.pro
+- Website: https://invariant.pro

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sigma-guard"
-version = "0.1.0"
-description = "Pre-commit contradiction detection for graph databases using sheaf cohomology"
+version = "0.2.0"
+description = "Deterministic structural verification for knowledge graphs, agent state, and LLM output using sheaf cohomology. MCP server included."
 readme = "README.md"
 license = {text = "BSL-1.1"}
 requires-python = ">=3.9"
@@ -13,28 +13,37 @@ authors = [
     {name = "Jason Volk", email = "jason@invariant.pro"},
 ]
 keywords = [
+    "mcp",
+    "model-context-protocol",
     "graph-database",
     "contradiction-detection",
     "sheaf-cohomology",
+    "hallucination-detection",
+    "knowledge-graph",
+    "verification",
+    "agent-verification",
+    "llm-verification",
+    "graphrag",
     "data-integrity",
     "pre-commit-hook",
     "memgraph",
     "neo4j",
-    "hallucination-detection",
-    "knowledge-graph",
-    "verification",
+    "deterministic",
+    "structural-verification",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Topic :: Database",
     "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Quality Assurance",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     "numpy>=1.21",
@@ -42,10 +51,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.0"]
+mcp = ["mcp>=1.6", "uvicorn>=0.20"]
 memgraph = ["gqlalchemy>=1.0"]
 neo4j = ["neo4j>=5.0"]
-all = ["mcp>=1.0", "gqlalchemy>=1.0", "neo4j>=5.0"]
+all = ["mcp>=1.6", "uvicorn>=0.20", "gqlalchemy>=1.0", "neo4j>=5.0"]
 dev = ["pytest>=7.0", "pytest-cov"]
 
 [project.scripts]
@@ -58,6 +67,7 @@ Homepage = "https://invariant.pro"
 Repository = "https://github.com/invariant-research/sigma-guard"
 Documentation = "https://invariant.pro/docs/sigma-guard"
 Issues = "https://github.com/invariant-research/sigma-guard/issues"
+MCP = "https://invariant.pro/docs/sigma-guard/mcp"
 
 [tool.setuptools.packages.find]
 include = ["sigma_guard*"]

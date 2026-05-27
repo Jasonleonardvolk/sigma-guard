@@ -2,18 +2,21 @@
 # MCP (Model Context Protocol) server for SIGMA Guard.
 #
 # Exposes SIGMA verification as MCP tools that any MCP-compatible
-# agent (Hermes, Claude, etc.) can call before final answer emission.
+# agent (Claude, Cursor, LangChain, LlamaIndex, etc.) can call
+# to detect structural contradictions before trusting output.
 #
 # Usage:
-#   sigma-guard-mcp                          # stdio transport (default)
-#   sigma-guard-mcp --transport sse --port 8401   # SSE transport
+#   sigma-guard-mcp                                      # stdio (default)
+#   sigma-guard-mcp --transport streamable-http           # Streamable HTTP
+#   sigma-guard-mcp --transport streamable-http --port 8401
 #
 # Tools exposed:
-#   verify_graph    - verify a full graph for structural contradictions
-#   verify_claims   - verify a list of LLM claims for consistency
-#   check_write     - check if a proposed graph write creates contradictions
+#   verify_graph    - verify a graph for structural contradictions
+#   verify_claims   - verify LLM claims for consistency
+#   check_write     - check if a proposed graph write is safe
 #
-# May 2026 | Invariant Research | Patent Pending (U.S. App# 19/649,080)
+# MCP Protocol: 2025-03-26+ (Streamable HTTP supported)
+# May 2026 | Invariant Research
 
 import json
 import sys
@@ -21,208 +24,105 @@ import argparse
 
 
 def create_server():
-    """Create and configure the SIGMA Guard MCP server."""
+    """Create and configure the SIGMA Guard MCP server using FastMCP."""
     try:
-        from mcp.server import Server
-        from mcp.types import Tool, TextContent
+        from mcp.server.fastmcp import FastMCP
     except ImportError:
         print(
-            "MCP package not installed. Install with:\n"
+            "MCP package not installed or outdated. Install with:\n"
             "  pip install sigma-guard[mcp]\n"
             "  # or\n"
-            "  pip install mcp",
+            "  pip install 'mcp>=1.6'",
             file=sys.stderr,
         )
         sys.exit(1)
 
     from sigma_guard import SigmaGuard
 
-    server = Server("sigma-guard")
+    mcp = FastMCP(
+        "sigma-guard",
+        instructions=(
+            "SIGMA Guard is a deterministic structural verification layer "
+            "for knowledge graphs, agent state, and LLM output. It uses "
+            "sheaf cohomology to detect contradictions that schema validation "
+            "and constraint engines miss. Call verify_claims to check LLM "
+            "output before emitting it. Call verify_graph to audit a full "
+            "knowledge graph. Call check_write to gate a proposed mutation. "
+            "Every verdict is deterministic, reproducible, and returns a "
+            "cryptographically signed proof receipt. Zero ML. Zero GPU. "
+            "35 microseconds per edit at 5 million vertices."
+        ),
+    )
 
-    @server.list_tools()
-    async def list_tools():
-        return [
-            Tool(
-                name="verify_graph",
-                description=(
-                    "Verify a graph for structural contradictions using "
-                    "sheaf cohomology. Accepts a JSON graph with vertices "
-                    "(each having claims as key-value pairs) and edges. "
-                    "Returns a deterministic verdict: CONSISTENT or "
-                    "INCONSISTENT, with exact contradiction locations, "
-                    "severity levels, and cryptographic proof IDs. "
-                    "Use this before trusting graph data or LLM output "
-                    "that contains structured claims."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "graph": {
-                            "type": "object",
-                            "description": (
-                                "Graph data with 'vertices' and 'edges'. "
-                                "Each vertex has 'id' and 'claims' (key-value). "
-                                "Each edge has 'source', 'target', 'relation'."
-                            ),
-                            "properties": {
-                                "vertices": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "id": {"type": "string"},
-                                            "label": {"type": "string"},
-                                            "claims": {
-                                                "type": "object",
-                                                "additionalProperties": True,
-                                            },
-                                        },
-                                        "required": ["id"],
-                                    },
-                                },
-                                "edges": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "source": {"type": "string"},
-                                            "target": {"type": "string"},
-                                            "relation": {"type": "string"},
-                                        },
-                                        "required": ["source", "target"],
-                                    },
-                                },
-                            },
-                            "required": ["vertices", "edges"],
-                        },
-                    },
-                    "required": ["graph"],
-                },
-            ),
-            Tool(
-                name="verify_claims",
-                description=(
-                    "Verify a list of claims extracted from LLM output "
-                    "for structural consistency. Each claim is a statement "
-                    "with a subject, property, and value. SIGMA builds a "
-                    "verification graph and checks whether all claims can "
-                    "be true simultaneously. Returns SAFE or UNSAFE with "
-                    "a signed receipt. Use this to verify LLM output before "
-                    "emitting it to the user."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "claims": {
-                            "type": "array",
-                            "description": (
-                                "List of claims. Each claim has a 'subject' "
-                                "(entity), 'property' (what is claimed), and "
-                                "'value' (the claimed value)."
-                            ),
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "subject": {
-                                        "type": "string",
-                                        "description": "Entity the claim is about",
-                                    },
-                                    "property": {
-                                        "type": "string",
-                                        "description": "What is being claimed",
-                                    },
-                                    "value": {
-                                        "type": "string",
-                                        "description": "The claimed value",
-                                    },
-                                },
-                                "required": ["subject", "property", "value"],
-                            },
-                        },
-                    },
-                    "required": ["claims"],
-                },
-            ),
-            Tool(
-                name="check_write",
-                description=(
-                    "Check whether a proposed graph write would create a "
-                    "structural contradiction. Provide the current graph "
-                    "and the proposed new edge. Returns whether the write "
-                    "is safe or would create a contradiction, with proof."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "graph": {
-                            "type": "object",
-                            "description": "Current graph state (same format as verify_graph)",
-                            "properties": {
-                                "vertices": {"type": "array"},
-                                "edges": {"type": "array"},
-                            },
-                            "required": ["vertices", "edges"],
-                        },
-                        "source": {
-                            "type": "string",
-                            "description": "Source vertex ID for the proposed write",
-                        },
-                        "target": {
-                            "type": "string",
-                            "description": "Target vertex ID for the proposed write",
-                        },
-                        "relation": {
-                            "type": "string",
-                            "description": "Relationship type for the proposed write",
-                        },
-                    },
-                    "required": ["graph", "source", "target", "relation"],
-                },
-            ),
-        ]
+    # ------------------------------------------------------------------
+    # Tool: verify_graph
+    # ------------------------------------------------------------------
+    @mcp.tool(
+        name="verify_graph",
+        description=(
+            "Detect structural contradictions in a knowledge graph, "
+            "agent memory graph, compliance graph, or any graph where "
+            "nodes carry claims that must be globally consistent. "
+            "Uses cellular sheaf cohomology (H^1) to find contradictions "
+            "that schema validation and constraint engines miss. "
+            "Returns a deterministic verdict (CONSISTENT or INCONSISTENT), "
+            "exact contradiction locations with severity rankings, "
+            "Dirichlet energy per edge, and a cryptographic proof ID. "
+            "Use BEFORE trusting retrieved graph data, after GraphRAG "
+            "retrieval, after knowledge graph ETL merges, or when "
+            "auditing agent memory for accumulated contradictions. "
+            "Latency: sub-millisecond for typical graphs. "
+            "No ML, no GPU, no training data, no probabilistic scoring. "
+            "Every run on the same input produces the same output."
+        ),
+    )
+    def verify_graph(
+        graph: dict,
+    ) -> str:
+        """Verify a graph for structural contradictions.
 
-    @server.call_tool()
-    async def call_tool(name: str, arguments: dict):
-        if name == "verify_graph":
-            return await _handle_verify_graph(arguments)
-        elif name == "verify_claims":
-            return await _handle_verify_claims(arguments)
-        elif name == "check_write":
-            return await _handle_check_write(arguments)
-        else:
-            return [TextContent(
-                type="text",
-                text=json.dumps({
-                    "error": "Unknown tool: %s" % name,
-                    "available": ["verify_graph", "verify_claims", "check_write"],
-                }),
-            )]
+        Args:
+            graph: Graph data with 'vertices' and 'edges'.
+                   Each vertex has 'id' and optional 'claims' (key-value pairs).
+                   Each edge has 'source', 'target', and optional 'relation'.
+                   Example:
+                   {
+                       "vertices": [
+                           {"id": "Policy", "claims": {"vendor": "A"}},
+                           {"id": "Procurement", "claims": {"vendor": "B"}}
+                       ],
+                       "edges": [
+                           {"source": "Policy", "target": "Procurement",
+                            "relation": "governs"}
+                       ]
+                   }
 
-    async def _handle_verify_graph(arguments: dict):
-        graph_data = arguments.get("graph", {})
-        if not graph_data.get("vertices"):
-            return [TextContent(
-                type="text",
-                text=json.dumps({
-                    "error": "Graph must contain at least one vertex.",
-                    "expected_format": {
-                        "vertices": [
-                            {"id": "A", "claims": {"key": "value"}},
-                        ],
-                        "edges": [
-                            {"source": "A", "target": "B", "relation": "rel"},
-                        ],
-                    },
-                }),
-            )]
+        Returns:
+            JSON with verdict, contradiction details, and proof receipt.
+        """
+        if not graph.get("vertices"):
+            return json.dumps({
+                "error": "Graph must contain at least one vertex.",
+                "expected_format": {
+                    "vertices": [
+                        {"id": "A", "claims": {"key": "value"}},
+                    ],
+                    "edges": [
+                        {"source": "A", "target": "B", "relation": "rel"},
+                    ],
+                },
+            })
 
         try:
             guard = SigmaGuard()
-            guard.load_dict(graph_data)
+            guard.load_dict(graph)
             verdict = guard.verify()
 
             result = {
-                "verdict": "INCONSISTENT" if verdict.has_contradictions else "CONSISTENT",
+                "verdict": (
+                    "INCONSISTENT" if verdict.has_contradictions
+                    else "CONSISTENT"
+                ),
                 "safe_to_rely_on": not verdict.has_contradictions,
                 "contradiction_count": verdict.contradiction_count,
                 "h1_dimension": verdict.h1_dimension,
@@ -245,21 +145,57 @@ def create_server():
                         "proof_id": c.proof_id,
                     })
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            return json.dumps(result, indent=2)
 
         except Exception as e:
-            return [TextContent(
-                type="text",
-                text=json.dumps({"error": str(e)}),
-            )]
+            return json.dumps({"error": str(e)})
 
-    async def _handle_verify_claims(arguments: dict):
-        claims = arguments.get("claims", [])
+    # ------------------------------------------------------------------
+    # Tool: verify_claims
+    # ------------------------------------------------------------------
+    @mcp.tool(
+        name="verify_claims",
+        description=(
+            "Verify a list of claims extracted from LLM output, RAG "
+            "retrieval, or agent reasoning for structural consistency. "
+            "Detects hallucinations where an LLM asserts contradictory "
+            "facts in the same response or across conversation turns. "
+            "Each claim has a subject (entity), property (attribute), "
+            "and value (what is asserted). SIGMA builds a verification "
+            "graph from the claims and checks whether all claims can be "
+            "true simultaneously using sheaf cohomology. "
+            "Returns SAFE or UNSAFE with a signed proof receipt. "
+            "Use BEFORE emitting LLM output to the user, after RAG "
+            "retrieval to check retrieved facts agree, or when an agent "
+            "accumulates state across multiple tool calls. "
+            "If UNSAFE: revise the output, flag for human review, or "
+            "block emission entirely. "
+            "Zero ML. Deterministic. Same input always yields same verdict."
+        ),
+    )
+    def verify_claims(
+        claims: list,
+    ) -> str:
+        """Verify claims for structural consistency.
+
+        Args:
+            claims: List of claim objects. Each has:
+                    - subject (str): entity the claim is about
+                    - property (str): what is being claimed
+                    - value (str): the claimed value
+                    Example:
+                    [
+                        {"subject": "ComponentX", "property": "ships", "value": "Q2"},
+                        {"subject": "ComponentX", "property": "production_start",
+                         "value": "Q3"}
+                    ]
+
+        Returns:
+            JSON with verdict (SAFE/UNSAFE), contradiction details,
+            and proof receipt.
+        """
         if not claims:
-            return [TextContent(
-                type="text",
-                text=json.dumps({"error": "No claims provided."}),
-            )]
+            return json.dumps({"error": "No claims provided."})
 
         # Group claims by subject to build vertices
         subjects = {}
@@ -273,14 +209,17 @@ def create_server():
 
         vertices = list(subjects.values())
 
-        # Create edges between all subjects that share at least one property
+        # Create edges between subjects that share at least one property
         edges = []
         subj_list = list(subjects.keys())
         for i in range(len(subj_list)):
             for j in range(i + 1, len(subj_list)):
                 a = subj_list[i]
                 b = subj_list[j]
-                shared = set(subjects[a]["claims"].keys()) & set(subjects[b]["claims"].keys())
+                shared = (
+                    set(subjects[a]["claims"].keys())
+                    & set(subjects[b]["claims"].keys())
+                )
                 if shared:
                     edges.append({
                         "source": a,
@@ -333,39 +272,68 @@ def create_server():
                 )
             else:
                 result["recommendation"] = (
-                    "Claims are structurally consistent under the "
-                    "configured verification model."
+                    "Claims are structurally consistent. "
+                    "Safe to emit or commit."
                 )
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            return json.dumps(result, indent=2)
 
         except Exception as e:
-            return [TextContent(
-                type="text",
-                text=json.dumps({"error": str(e)}),
-            )]
+            return json.dumps({"error": str(e)})
 
-    async def _handle_check_write(arguments: dict):
-        graph_data = arguments.get("graph", {})
-        source = arguments.get("source", "")
-        target = arguments.get("target", "")
-        relation = arguments.get("relation", "related_to")
+    # ------------------------------------------------------------------
+    # Tool: check_write
+    # ------------------------------------------------------------------
+    @mcp.tool(
+        name="check_write",
+        description=(
+            "Check whether a proposed graph mutation would create a "
+            "structural contradiction BEFORE committing the write. "
+            "Acts as a pre-commit verification gate for knowledge "
+            "graphs, agent memory stores, and any system that mutates "
+            "graph state. Provide the current graph and the proposed "
+            "new edge. Returns whether the write is safe to commit or "
+            "would introduce a contradiction, with a deterministic "
+            "proof and sub-millisecond latency (35 microseconds at "
+            "5M vertices). "
+            "Use as a write guard in GraphRAG pipelines, agent memory "
+            "systems, Memgraph/Neo4j pre-commit hooks, or any workflow "
+            "where graph mutations must preserve consistency. "
+            "If the write creates a contradiction: block the commit "
+            "and return the proof to the caller."
+        ),
+    )
+    def check_write(
+        graph: dict,
+        source: str,
+        target: str,
+        relation: str = "related_to",
+    ) -> str:
+        """Check if a proposed write would create a contradiction.
 
-        if not graph_data.get("vertices"):
-            return [TextContent(
-                type="text",
-                text=json.dumps({"error": "Graph must contain at least one vertex."}),
-            )]
+        Args:
+            graph: Current graph state with 'vertices' and 'edges'
+                   (same format as verify_graph).
+            source: Source vertex ID for the proposed edge.
+            target: Target vertex ID for the proposed edge.
+            relation: Relationship type for the proposed edge.
+
+        Returns:
+            JSON with safe_to_commit flag and proof if contradiction found.
+        """
+        if not graph.get("vertices"):
+            return json.dumps({
+                "error": "Graph must contain at least one vertex.",
+            })
 
         if not source or not target:
-            return [TextContent(
-                type="text",
-                text=json.dumps({"error": "Both 'source' and 'target' are required."}),
-            )]
+            return json.dumps({
+                "error": "Both 'source' and 'target' are required.",
+            })
 
         try:
             guard = SigmaGuard()
-            guard.load_dict(graph_data)
+            guard.load_dict(graph)
             result = guard.check_write(source, target, relation)
 
             output = {
@@ -385,15 +353,12 @@ def create_server():
             else:
                 output["recommendation"] = "Write is safe to commit."
 
-            return [TextContent(type="text", text=json.dumps(output, indent=2))]
+            return json.dumps(output, indent=2)
 
         except Exception as e:
-            return [TextContent(
-                type="text",
-                text=json.dumps({"error": str(e)}),
-            )]
+            return json.dumps({"error": str(e)})
 
-    return server
+    return mcp
 
 
 def main():
@@ -404,69 +369,156 @@ def main():
             "Any MCP-compatible agent can call verify_graph, "
             "verify_claims, or check_write.\n\n"
             "Examples:\n"
-            "  sigma-guard-mcp                    # stdio (default)\n"
-            "  sigma-guard-mcp --transport sse    # SSE on port 8401\n"
+            "  sigma-guard-mcp                              # stdio\n"
+            "  sigma-guard-mcp --transport streamable-http   # HTTP\n"
+            "  sigma-guard-mcp --transport streamable-http --port 8401\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--transport",
-        choices=["stdio", "sse"],
+        choices=["stdio", "streamable-http", "sse"],
         default="stdio",
-        help="Transport mode (default: stdio)",
+        help=(
+            "Transport mode. 'stdio' for local agents (Claude Desktop, "
+            "Cursor). 'streamable-http' for remote agents and production "
+            "deployment (recommended for remote). 'sse' is deprecated "
+            "but kept for backward compatibility. Default: stdio."
+        ),
     )
     parser.add_argument(
         "--port",
         type=int,
         default=8401,
-        help="Port for SSE transport (default: 8401)",
+        help="Port for HTTP transport (default: 8401)",
     )
     parser.add_argument(
         "--host",
         default="0.0.0.0",
-        help="Host for SSE transport (default: 0.0.0.0)",
+        help="Host for HTTP transport (default: 0.0.0.0)",
     )
 
     args = parser.parse_args()
-    server = create_server()
+    mcp = create_server()
 
     if args.transport == "stdio":
-        from mcp.server.stdio import stdio_server
-        import asyncio
+        mcp.run(transport="stdio")
 
-        async def run_stdio():
-            async with stdio_server() as (read_stream, write_stream):
-                await server.run(read_stream, write_stream)
-
-        asyncio.run(run_stdio())
+    elif args.transport == "streamable-http":
+        # FastMCP.run() does not accept host/port as kwargs.
+        # Set them on settings before calling run().
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        print(
+            "SIGMA Guard MCP Server (Streamable HTTP) on "
+            "http://%s:%d%s" % (
+                args.host, args.port,
+                mcp.settings.streamable_http_path,
+            )
+        )
+        print("Tools: verify_graph, verify_claims, check_write")
+        mcp.run(transport="streamable-http")
 
     elif args.transport == "sse":
+        # Backward compatibility: SSE is deprecated as of MCP 2025-03-26
+        # but some older clients may still need it.
+        print(
+            "WARNING: SSE transport is deprecated. "
+            "Use --transport streamable-http for remote deployment."
+        )
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        print(
+            "SIGMA Guard MCP Server (SSE) on "
+            "http://%s:%d" % (args.host, args.port)
+        )
+        print("Tools: verify_graph, verify_claims, check_write")
+        try:
+            mcp.run(transport="sse")
+        except Exception:
+            # If FastMCP doesn't support sse flag, fall back to
+            # legacy SseServerTransport
+            print("FastMCP SSE not available, using legacy transport...")
+            _run_legacy_sse(args.host, args.port)
+
+
+def _run_legacy_sse(host, port):
+    """Fallback for older mcp versions that need manual SSE setup."""
+    try:
+        from mcp.server import Server
         from mcp.server.sse import SseServerTransport
+        from mcp.types import Tool, TextContent
         from starlette.applications import Starlette
         from starlette.routing import Route, Mount
         import uvicorn
+    except ImportError as e:
+        print("Legacy SSE requires: pip install mcp starlette uvicorn")
+        print("Error: %s" % e)
+        sys.exit(1)
 
-        sse = SseServerTransport("/messages/")
+    # Re-create using low-level API for SSE compatibility
+    from sigma_guard import SigmaGuard
+    import asyncio
 
-        async def handle_sse(request):
-            async with sse.connect_sse(
-                request.scope, request.receive, request._send
-            ) as streams:
-                await server.run(streams[0], streams[1])
+    server = Server("sigma-guard")
+    sse = SseServerTransport("/messages/")
 
-        starlette_app = Starlette(
-            routes=[
-                Route("/sse", endpoint=handle_sse),
-                Mount("/messages/", app=sse.handle_post_message),
-            ],
-        )
+    @server.list_tools()
+    async def list_tools():
+        return [
+            Tool(
+                name="verify_graph",
+                description="Verify a graph for structural contradictions.",
+                inputSchema={"type": "object", "properties": {
+                    "graph": {"type": "object"}
+                }, "required": ["graph"]},
+            ),
+            Tool(
+                name="verify_claims",
+                description="Verify LLM claims for consistency.",
+                inputSchema={"type": "object", "properties": {
+                    "claims": {"type": "array"}
+                }, "required": ["claims"]},
+            ),
+            Tool(
+                name="check_write",
+                description="Check if a proposed graph write is safe.",
+                inputSchema={"type": "object", "properties": {
+                    "graph": {"type": "object"},
+                    "source": {"type": "string"},
+                    "target": {"type": "string"},
+                    "relation": {"type": "string"},
+                }, "required": ["graph", "source", "target"]},
+            ),
+        ]
 
-        print(
-            "SIGMA Guard MCP Server (SSE) on http://%s:%d"
-            % (args.host, args.port)
-        )
-        print("Tools: verify_graph, verify_claims, check_write")
-        uvicorn.run(starlette_app, host=args.host, port=args.port)
+    @server.call_tool()
+    async def call_tool(name, arguments):
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "error": (
+                    "SSE transport is deprecated. Please upgrade to "
+                    "streamable-http. Run: sigma-guard-mcp "
+                    "--transport streamable-http"
+                ),
+            }),
+        )]
+
+    async def handle_sse(request):
+        async with sse.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
+            await server.run(streams[0], streams[1])
+
+    starlette_app = Starlette(
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Mount("/messages/", app=sse.handle_post_message),
+        ],
+    )
+
+    uvicorn.run(starlette_app, host=host, port=port)
 
 
 if __name__ == "__main__":
