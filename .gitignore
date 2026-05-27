@@ -13,4 +13,5 @@ venv/
 desktop.ini
 .DS_Store
 Thumbs.db
+.pypirc
 docker/build_context/
