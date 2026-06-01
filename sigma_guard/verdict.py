@@ -5,7 +5,7 @@
 # Contradiction: a single detected structural contradiction
 # WriteCheckResult: result of checking a single proposed write
 #
-# May 2026 | Invariant Research | Patent Pending
+# May 2026 | Invariant Research
 
 import json
 import time
@@ -84,7 +84,7 @@ class Verdict:
 
     def summary(self) -> str:
         lines = [
-            "SIGMA Graph Guard v0.1.0",
+            "SIGMA Graph Guard v0.3.0",
             "=" * 40,
             "Graph: %d vertices, %d edges"
             % (

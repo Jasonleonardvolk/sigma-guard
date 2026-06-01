@@ -7,7 +7,7 @@
 #   sigma-guard verify my_graph.edges --sign
 #   sigma-guard check --source A --target B --relation supplies my_graph.json
 #
-# May 2026 | Invariant Research | Patent Pending
+# May 2026 | Invariant Research
 
 import sys
 import argparse

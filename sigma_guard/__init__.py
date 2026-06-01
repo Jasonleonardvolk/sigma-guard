@@ -7,7 +7,7 @@
 #   guard.load_json("my_graph.json")
 #   verdict = guard.verify()
 #
-# May 2026 | Invariant Research | Patent Pending (U.S. App# 19/649,080)
+# May 2026 | Invariant Research
 
 from sigma_guard.engine import SigmaGuard
 from sigma_guard.verdict import Verdict, Contradiction, WriteCheckResult

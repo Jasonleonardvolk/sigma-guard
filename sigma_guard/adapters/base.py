@@ -5,7 +5,7 @@
 # The adapter translates database-specific write events into
 # SIGMA verification calls.
 #
-# May 2026 | Invariant Research | Patent Pending
+# May 2026 | Invariant Research
 
 import logging
 from abc import ABC, abstractmethod
@@ -62,6 +62,7 @@ class GraphDatabaseAdapter(ABC):
         seed: int = 42,
         block_on_contradiction: bool = True,
         log_only: bool = False,
+        constraints: dict = None,
     ):
         """
         Args:
@@ -70,8 +71,12 @@ class GraphDatabaseAdapter(ABC):
             block_on_contradiction: If True, reject writes that create
                 contradictions. If False, log but allow.
             log_only: If True, log all verdicts but never block.
+            constraints: Per-relation-type constraint rules.
+                See engine.RelationConstraint for details.
         """
-        self.guard = SigmaGuard(stalk_dim=stalk_dim, seed=seed)
+        self.guard = SigmaGuard(
+            stalk_dim=stalk_dim, seed=seed, constraints=constraints,
+        )
         self.block_on_contradiction = block_on_contradiction
         self.log_only = log_only
         self._write_count = 0

@@ -13,7 +13,7 @@
 #   mg = MemgraphGuard(host="localhost", port=7687)
 #   mg.install_trigger()
 #
-# May 2026 | Invariant Research | Patent Pending
+# May 2026 | Invariant Research
 
 import json
 import logging
@@ -86,12 +86,14 @@ class MemgraphGuard(GraphDatabaseAdapter):
         seed: int = 42,
         block_on_contradiction: bool = True,
         log_only: bool = False,
+        constraints: dict = None,
     ):
         super().__init__(
             stalk_dim=stalk_dim,
             seed=seed,
             block_on_contradiction=block_on_contradiction,
             log_only=log_only,
+            constraints=constraints,
         )
         self.host = host
         self.port = port
@@ -223,10 +225,13 @@ class MemgraphGuard(GraphDatabaseAdapter):
         for row in vertex_result:
             labels = row.get("labels", [])
             label = labels[0] if labels else "node_%d" % row["id"]
+            props = row.get("props", {})
+            # Use name property as display label if available
+            display = props.get("name", props.get("title", label))
             vertices.append({
                 "id": str(row["id"]),
-                "label": label,
-                "claims": row.get("props", {}),
+                "label": str(display),
+                "claims": props,
             })
 
         # Export edges

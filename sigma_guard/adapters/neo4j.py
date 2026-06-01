@@ -8,7 +8,7 @@
 # Requirements:
 #   pip install neo4j
 #
-# May 2026 | Invariant Research | Patent Pending
+# May 2026 | Invariant Research
 
 import logging
 from typing import Any, Dict, List, Optional
@@ -45,12 +45,14 @@ class Neo4jGuard(GraphDatabaseAdapter):
         seed: int = 42,
         block_on_contradiction: bool = True,
         log_only: bool = False,
+        constraints: dict = None,
     ):
         super().__init__(
             stalk_dim=stalk_dim,
             seed=seed,
             block_on_contradiction=block_on_contradiction,
             log_only=log_only,
+            constraints=constraints,
         )
         self.uri = uri
         self.auth = auth
@@ -193,9 +195,12 @@ class Neo4jGuard(GraphDatabaseAdapter):
                 labels = record["labels"]
                 label = labels[0] if labels else "node"
                 props = dict(record["props"]) if record["props"] else {}
+                # Use the name property as the display label if available,
+                # falling back to the Neo4j node type label.
+                display = props.get("name", props.get("title", label))
                 vertices.append({
                     "id": str(record["id"]),
-                    "label": label,
+                    "label": str(display),
                     "claims": props,
                 })
 

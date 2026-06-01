@@ -5,13 +5,27 @@
 # mathematical engine. It translates graph mutations into sheaf
 # operations and returns Verdict objects.
 #
-# May 2026 | Invariant Research | Patent Pending (U.S. App# 19/649,080)
+# CONSTRAINT PHILOSOPHY:
+#   The sheaf detects STRUCTURAL contradictions: cycles, symmetry
+#   violations, transitivity failures, and functional constraint
+#   violations. It does NOT flag property differences between
+#   distinct entities as contradictions. "Acme" and "Beta" having
+#   different names is not a contradiction; it is two entities.
+#   A circular supply chain (A->B->C->A) IS a contradiction if
+#   the relationship type is declared acyclic.
+#
+#   Users configure constraints per relationship type. The engine
+#   encodes those constraints as restriction maps. The sheaf does
+#   the rest.
+#
+# May-June 2026 | Invariant Research
 
 import time
 import json
 import hashlib
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -25,19 +39,21 @@ from sigma_guard.verdict import (
 logger = logging.getLogger(__name__)
 
 
-# Severity thresholds based on Dirichlet energy fraction
-SEVERITY_CRITICAL = 0.25   # >25% of total energy at one edge
-SEVERITY_HIGH = 0.10       # >10%
-SEVERITY_MODERATE = 0.03   # >3%
-# Below 3% = LOW
+# ---- Severity thresholds (energy fraction) ----
+SEVERITY_CRITICAL = 0.25
+SEVERITY_HIGH = 0.10
+SEVERITY_MODERATE = 0.03
 
 # Minimum energy fraction to report an edge as a contradiction.
-# Edges below this fraction are only reported if they have a
-# semantic disagreement (shared claim keys with differing values).
-ENERGY_REPORT_FLOOR = 0.005  # 0.5% of total energy
+ENERGY_REPORT_FLOOR = 0.005
+
+# Pre-clamp scale for restriction maps. All maps are scaled to
+# this value so they satisfy the Purity Gate (sigma_max <= 0.99)
+# without triggering PG9 warnings. 0.98 provides margin.
+PURITY_SCALE = 0.98
 
 
-def _classify_severity(energy_fraction: float) -> str:
+def _classify_severity(energy_fraction):
     """Classify contradiction severity from energy fraction."""
     if energy_fraction >= SEVERITY_CRITICAL:
         return "CRITICAL"
@@ -48,6 +64,62 @@ def _classify_severity(energy_fraction: float) -> str:
     return "LOW"
 
 
+# ---- Constraint configuration ----
+
+@dataclass
+class RelationConstraint:
+    """
+    Constraint rules for a relationship type.
+
+    Configure these per relationship type to control what the
+    sheaf engine treats as a structural contradiction.
+
+    Attributes:
+        acyclic: If True, cycles involving this relation type are
+            flagged as contradictions. Use for supply chains,
+            reporting hierarchies, dependency graphs.
+        symmetric: If True, the relation must be bidirectional.
+            A BORDERS B requires B BORDERS A. Asymmetry is flagged.
+        functional: If True, each source node should have at most
+            one target for this relation. A country with two
+            capitals (two HAS_CAPITAL edges) is flagged.
+        agree_on: Set of property keys that MUST agree across this
+            edge. Only use when the relationship semantically
+            requires agreement (e.g., two references to the same
+            entity should have the same "type" property).
+        coupling_strength: How strongly this constraint couples
+            adjacent nodes. Higher values (closer to PURITY_SCALE)
+            produce stronger contradiction signals. Range: 0.1-0.98.
+            Default 0.5 is moderate coupling.
+    """
+    acyclic: bool = False
+    symmetric: bool = False
+    functional: bool = False
+    agree_on: Set[str] = field(default_factory=set)
+    coupling_strength: float = 0.5
+
+
+# Default constraints for common relationship types.
+# Users override or extend this via SigmaGuard(constraints={...}).
+DEFAULT_CONSTRAINTS = {
+    # Supply chains should not be circular
+    "SUPPLIES": RelationConstraint(acyclic=True),
+    "DEPENDS_ON": RelationConstraint(acyclic=True),
+    "REPORTS_TO": RelationConstraint(acyclic=True),
+    "PARENT_OF": RelationConstraint(acyclic=True),
+    "IMPORTS_FROM": RelationConstraint(acyclic=True),
+    # Borders should be symmetric
+    "BORDERS": RelationConstraint(symmetric=True),
+    "ADJACENT_TO": RelationConstraint(symmetric=True),
+    "CONNECTED_TO": RelationConstraint(symmetric=True),
+    # Functional constraints (at most one target)
+    "HAS_CAPITAL": RelationConstraint(functional=True),
+    "HAS_CEO": RelationConstraint(functional=True),
+    "BORN_IN": RelationConstraint(functional=True),
+    "HEADQUARTERED_IN": RelationConstraint(functional=True),
+}
+
+
 class SigmaGuard:
     """
     Pre-commit contradiction detection for graph databases.
@@ -55,35 +127,74 @@ class SigmaGuard:
     Uses sheaf cohomology (H^1 obstructions) to detect structural
     contradictions in graph data. Deterministic, no ML, no GPU.
 
-    Usage:
-        guard = SigmaGuard()
-        guard.load_json("my_graph.json")
-        verdict = guard.verify()
+    Constraint configuration:
+        guard = SigmaGuard(constraints={
+            "SUPPLIES": RelationConstraint(acyclic=True),
+            "BORDERS": RelationConstraint(symmetric=True),
+            "HAS_CAPITAL": RelationConstraint(functional=True),
+        })
 
-        # Or incrementally:
-        result = guard.check_write(source="A", target="B", ...)
+    Or use keyword shortcuts:
+        guard = SigmaGuard(constraints={
+            "SUPPLIES": {"acyclic": True},
+            "BORDERS": {"symmetric": True},
+        })
     """
 
-    def __init__(self, stalk_dim: int = 8, seed: int = 42):
+    def __init__(
+        self,
+        stalk_dim: int = 8,
+        seed: int = 42,
+        constraints: Optional[Dict[str, Any]] = None,
+    ):
         """
         Initialize the SIGMA guard.
 
         Args:
             stalk_dim: Dimension of vertex stalks (default 8).
-                       Higher values capture more structure but
-                       increase computation.
             seed: Random seed for reproducible stalk initialization.
+            constraints: Per-relation-type constraint rules.
+                Keys are relation type strings (e.g., "SUPPLIES").
+                Values are RelationConstraint instances or dicts
+                with the same fields. If None, uses DEFAULT_CONSTRAINTS.
         """
         self.stalk_dim = stalk_dim
         self.seed = seed
         self._graph = None
         self._sheaf = None
         self._cohomology = None
-        self._vertex_map = {}    # label -> vertex_id
-        self._vertex_labels = {} # vertex_id -> label
-        self._edge_data = []     # list of (source_label, target_label, relation, value)
+        self._vertex_map = {}
+        self._vertex_labels = {}
+        self._edge_data = []
+        self._edge_relations = []
+        self._vertex_key_labels = {}  # vid_key (original ID) -> display label
         self._use_standalone = False
         self._parsed_data = None
+
+        # Build constraint config.
+        # If constraints is explicitly provided (even empty), it REPLACES
+        # the defaults entirely. If None, use DEFAULT_CONSTRAINTS.
+        if constraints is not None:
+            self._constraints = {}
+            for rel_type, spec in constraints.items():
+                if isinstance(spec, RelationConstraint):
+                    self._constraints[rel_type] = spec
+                elif isinstance(spec, dict):
+                    self._constraints[rel_type] = RelationConstraint(**spec)
+                else:
+                    logger.warning(
+                        "Unknown constraint spec for '%s': %s",
+                        rel_type, spec,
+                    )
+        else:
+            self._constraints = dict(DEFAULT_CONSTRAINTS)
+
+    def get_constraint(self, relation_type: str) -> RelationConstraint:
+        """Get the constraint rules for a relation type."""
+        upper = relation_type.upper().replace(" ", "_")
+        return self._constraints.get(
+            upper, self._constraints.get(relation_type, RelationConstraint())
+        )
 
     # ------------------------------------------------------------------
     # Graph loading
@@ -113,11 +224,11 @@ class SigmaGuard:
         Expected format:
             {
                 "vertices": [
-                    {"id": "v1", "label": "Supplier_A", "claims": {"sole_source": true}},
+                    {"id": "v1", "label": "Supplier_A", "claims": {...}},
                     ...
                 ],
                 "edges": [
-                    {"source": "v1", "target": "v2", "relation": "supplies", "value": ...},
+                    {"source": "v1", "target": "v2", "relation": "SUPPLIES"},
                     ...
                 ]
             }
@@ -126,15 +237,11 @@ class SigmaGuard:
 
     def _build_from_parsed(self, data: Dict[str, Any]) -> None:
         """Build the sheaf graph from parsed data."""
-        # Free tier check
         from sigma_guard.free_tier import check_free_tier
         vertices = data.get("vertices", [])
         edges = data.get("edges", data.get("links", []))
         check_free_tier(len(vertices), len(edges))
 
-        # Try the full SIGMA core engine first.
-        # If not available, fall back to the standalone verifier
-        # (pure numpy/scipy, no SIGMA imports).
         try:
             from sigma.core.graph import SheafGraph
             from sigma.core.sheaf import CellularSheaf
@@ -152,6 +259,7 @@ class SigmaGuard:
 
         # Add vertices
         vertex_ids = {}
+        self._vertex_key_labels = {}  # reset on reload
         for v in vertices:
             vid_key = v.get("id", v.get("label", ""))
             label = v.get("label", vid_key)
@@ -159,10 +267,12 @@ class SigmaGuard:
             vertex_ids[vid_key] = vid
             self._vertex_map[label] = vid
             self._vertex_labels[vid] = label
+            self._vertex_key_labels[vid_key] = label
 
         # Add edges
         edges = data.get("edges", [])
         self._edge_data = []
+        self._edge_relations = []
         for e in edges:
             src_key = e.get("source", "")
             tgt_key = e.get("target", "")
@@ -176,35 +286,29 @@ class SigmaGuard:
             tgt_vid = vertex_ids[tgt_key]
             if src_vid == tgt_vid:
                 continue
-            graph.add_edge(src_vid, tgt_vid, label=e.get("relation", ""))
+            relation = e.get("relation", "")
+            graph.add_edge(src_vid, tgt_vid, label=relation)
             self._edge_data.append((
-                src_key,
-                tgt_key,
-                e.get("relation", ""),
-                e.get("value", None),
+                src_key, tgt_key, relation, e.get("value", None),
             ))
+            self._edge_relations.append(relation)
 
         self._graph = graph
 
-        # Build sheaf with random stalks
+        # Build sheaf with constraint-driven restriction maps
         d = self.stalk_dim
         sheaf = CellularSheaf(graph, default_stalk_dim=d)
 
-        # Initialize restriction maps from edge data
         for e_idx, (u, v) in enumerate(graph.edges):
+            relation = self._edge_relations[e_idx] if e_idx < len(self._edge_relations) else ""
             u_data = graph._vertex_data.get(u, {})
             v_data = graph._vertex_data.get(v, {})
 
-            if u_data and v_data:
-                r_uv, r_vu = self._compute_restriction_maps(
-                    u_data, v_data, d, rng
-                )
-                sheaf.set_restriction(u, e_idx, r_uv)
-                sheaf.set_restriction(v, e_idx, r_vu)
-            else:
-                eye = np.eye(d, dtype=np.float64)
-                sheaf.set_restriction(u, e_idx, eye)
-                sheaf.set_restriction(v, e_idx, eye)
+            r_uv, r_vu = self._compute_restriction_maps(
+                u_data, v_data, relation, d, rng
+            )
+            sheaf.set_restriction(u, e_idx, r_uv)
+            sheaf.set_restriction(v, e_idx, r_vu)
 
         self._sheaf = sheaf
         self._cohomology = CohomologyComputer(sheaf)
@@ -213,39 +317,89 @@ class SigmaGuard:
         self,
         u_data: Dict,
         v_data: Dict,
+        relation: str,
         d: int,
         rng: np.random.RandomState,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Compute restriction maps from vertex claim data.
+        Compute restriction maps from relationship type and constraint rules.
 
-        When two adjacent vertices make claims about the same concept,
-        the restriction maps encode the expected relationship. If the
-        claims are contradictory, the coboundary energy will be high.
+        DESIGN PRINCIPLE: restriction maps encode STRUCTURAL constraints
+        based on the relationship type. They do NOT compare property
+        values between distinct entities. Different companies having
+        different names is expected, not contradictory.
+
+        The base map is PURITY_SCALE * I (scaled identity), which
+        satisfies the Purity Gate and encodes mild structural coupling.
+        Constraint rules modify the map to encode stronger coupling
+        on specific dimensions, creating detectable H^1 obstructions
+        when the constraints are violated (e.g., cycles in acyclic
+        relations, asymmetry in symmetric relations).
         """
-        u_keys = set(u_data.keys()) if isinstance(u_data, dict) else set()
-        v_keys = set(v_data.keys()) if isinstance(v_data, dict) else set()
-        shared = u_keys & v_keys
+        constraint = self.get_constraint(relation)
 
-        if not shared:
-            eye = np.eye(d, dtype=np.float64)
+        # No constraint declared = pure identity maps.
+        # Identity maps produce H^1 = 0 on any graph, which is correct:
+        # an unconstrained relationship cannot create a contradiction.
+        has_any_constraint = (
+            constraint.acyclic
+            or constraint.agree_on
+        )
+        if not has_any_constraint:
+            eye = 0.99 * np.eye(d, dtype=np.float64)
             return eye, eye
 
-        r_uv = np.eye(d, dtype=np.float64)
-        r_vu = np.eye(d, dtype=np.float64)
+        # Base: scaled identity (satisfies Purity Gate, no PG9 warnings)
+        base = PURITY_SCALE * np.eye(d, dtype=np.float64)
+        r_uv = base.copy()
+        r_vu = base.copy()
 
-        for i, key in enumerate(sorted(shared)):
-            if i >= d:
-                break
-            u_val = u_data[key]
-            v_val = v_data[key]
+        strength = min(constraint.coupling_strength, PURITY_SCALE)
 
-            if u_val != v_val:
-                r_uv[i, i] = -1.0
-                if i + 1 < d:
-                    angle = 0.3 * (i + 1)
-                    r_uv[i, i + 1] = np.sin(angle) * 0.5
-                    r_vu[i, i + 1] = -np.sin(angle) * 0.5
+        # Acyclic constraint: asymmetric coupling that produces nonzero
+        # holonomy around cycles. The forward map (u->v) differs from
+        # the backward map (v->u) by a rotation-like perturbation.
+        # On a path (A->B->C), the composed maps are consistent.
+        # On a cycle (A->B->C->A), the composed maps fail to close,
+        # producing H^1 > 0.
+        if constraint.acyclic:
+            for i in range(min(d - 1, 4)):
+                angle = strength * 0.4 * (i + 1)
+                cos_a = np.cos(angle) * PURITY_SCALE
+                sin_a = np.sin(angle) * PURITY_SCALE
+                r_uv[i, i] = cos_a
+                r_uv[i, i + 1] = sin_a
+                r_uv[i + 1, i] = -sin_a
+                r_uv[i + 1, i + 1] = cos_a
+                # Reverse map uses negative angle
+                r_vu[i, i] = cos_a
+                r_vu[i, i + 1] = -sin_a
+                r_vu[i + 1, i] = sin_a
+                r_vu[i + 1, i + 1] = cos_a
+
+        # Symmetric and functional constraints are checked as direct
+        # graph inspections in verify(), not encoded in the sheaf.
+        # Only acyclic and agree_on use sheaf restriction maps.
+
+        # Agree-on constraint: specific property keys must match.
+        # Only these keys are compared; all other properties are ignored.
+        if constraint.agree_on and isinstance(u_data, dict) and isinstance(v_data, dict):
+            for i, key in enumerate(sorted(constraint.agree_on)):
+                if i >= d:
+                    break
+                u_val = u_data.get(key)
+                v_val = v_data.get(key)
+                if u_val is not None and v_val is not None and u_val != v_val:
+                    r_uv[i, i] = -PURITY_SCALE
+                    r_vu[i, i] = -PURITY_SCALE
+
+        # Clamp: ensure all singular values <= PURITY_SCALE.
+        # This is a safety net; the construction above should already
+        # satisfy it, but numerical edge cases are possible.
+        for r in (r_uv, r_vu):
+            svals = np.linalg.svd(r, compute_uv=False)
+            if svals.max() > 0.99:
+                r *= 0.99 / svals.max()
 
         return r_uv, r_vu
 
@@ -253,24 +407,37 @@ class SigmaGuard:
     # Semantic disagreement detection
     # ------------------------------------------------------------------
 
-    def _has_semantic_disagreement(self, u_vid: int, v_vid: int) -> Tuple[bool, List[str]]:
+    def _has_semantic_disagreement(
+        self, u_vid: int, v_vid: int, relation: str = ""
+    ) -> Tuple[bool, List[str]]:
         """
-        Check if two vertices have shared claim keys with differing values.
+        Check if two vertices violate a constraint rule.
 
-        Returns (has_disagreement, list_of_disagreeing_keys).
-        This distinguishes real contradictions from encoding noise.
+        Only reports disagreements on properties listed in the
+        constraint's agree_on set. Does NOT flag generic property
+        differences between distinct entities.
         """
+        constraint = self.get_constraint(relation)
+
+        # If no agree_on keys specified, no semantic disagreement
+        # is possible (structural contradictions come from the sheaf,
+        # not from property comparison).
+        if not constraint.agree_on:
+            return False, []
+
         u_data = self._graph._vertex_data.get(u_vid, {})
         v_data = self._graph._vertex_data.get(v_vid, {})
 
         if not isinstance(u_data, dict) or not isinstance(v_data, dict):
             return False, []
 
-        shared_keys = set(u_data.keys()) & set(v_data.keys())
-        disagreements = [
-            k for k in sorted(shared_keys)
-            if u_data.get(k) != v_data.get(k)
-        ]
+        disagreements = []
+        for key in sorted(constraint.agree_on):
+            u_val = u_data.get(key)
+            v_val = v_data.get(key)
+            if u_val is not None and v_val is not None and u_val != v_val:
+                disagreements.append(key)
+
         return len(disagreements) > 0, disagreements
 
     # ------------------------------------------------------------------
@@ -283,9 +450,6 @@ class SigmaGuard:
 
         Returns a Verdict with all detected contradictions, their
         locations, severities, and cryptographic proofs.
-
-        Uses the full SIGMA engine if available, otherwise falls back
-        to the standalone verifier (pure numpy/scipy).
         """
         if getattr(self, '_use_standalone', False):
             return self._verify_standalone()
@@ -309,9 +473,17 @@ class SigmaGuard:
         cert = self._cohomology.obstruction_certificate(section)
         total_energy = cert["total_energy"]
 
-        # Localize contradictions to edges and filter
+        # Localize contradictions to edges and filter.
+        # KEY RULE 1: if H^1 = 0, the graph has no structural
+        # contradictions regardless of energy values.
+        # KEY RULE 2: if no constraints are declared, don't report
+        # any structural contradictions. The user explicitly said
+        # "no rules." H^1 is still in the certificate for transparency.
         contradictions = []
-        if total_energy > 1e-8:
+        has_any_acyclic = any(
+            c.acyclic for c in self._constraints.values()
+        )
+        if has_any_acyclic and h1_dim > 0 and total_energy > 1e-8:
             localized = self._cohomology.localize_obstruction(
                 section, top_k=50
             )
@@ -324,27 +496,28 @@ class SigmaGuard:
                 endpoints = loc.get("endpoints", (None, None))
                 u_vid = endpoints[0]
                 v_vid = endpoints[1]
+                e_idx = loc.get("edge", 0)
 
-                # Two-criteria filter:
-                # 1. Energy criterion: significant fraction of total energy
-                passes_energy = energy >= energy_floor
+                # Get relation type for this edge
+                relation = ""
+                if e_idx < len(self._edge_relations):
+                    relation = self._edge_relations[e_idx]
 
-                # 2. Semantic criterion: explicit claim disagreement
-                has_disagreement, disagreeing_keys = False, []
-                if u_vid is not None and v_vid is not None:
-                    has_disagreement, disagreeing_keys = (
-                        self._has_semantic_disagreement(u_vid, v_vid)
-                    )
+                # ONLY report edges whose relation is declared acyclic.
+                # H^1 energy spreads across all edges in a cyclic graph;
+                # only the acyclic-declared ones represent real violations.
+                constraint = self.get_constraint(relation)
+                if not constraint.acyclic:
+                    continue
 
-                # Must pass at least one criterion
-                if not passes_energy and not has_disagreement:
+                if energy < energy_floor:
                     continue
 
                 severity = _classify_severity(fraction)
                 labels = loc.get("vertex_labels", ("?", "?"))
 
                 proof_data = json.dumps({
-                    "edge": loc["edge"],
+                    "edge": e_idx,
                     "endpoints": list(endpoints),
                     "energy": energy,
                     "h1_dim": h1_dim,
@@ -352,13 +525,13 @@ class SigmaGuard:
                 proof_id = generate_proof_id(proof_data)
 
                 explanation = self._generate_explanation(
-                    loc, disagreeing_keys
+                    loc, relation, []
                 )
 
                 contradictions.append(Contradiction(
                     severity=severity,
                     location=(labels[0] or "?", labels[1] or "?"),
-                    edge_index=loc["edge"],
+                    edge_index=e_idx,
                     energy=energy,
                     energy_fraction=fraction,
                     explanation=explanation,
@@ -367,7 +540,121 @@ class SigmaGuard:
 
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
-        # Root proof ID
+        # INDEPENDENT CONSTRAINT CHECK: agree_on violations.
+        # H^1 detects cycle-based structural contradictions.
+        # agree_on, functional, and symmetric constraints are checked
+        # as direct graph inspections because they are simpler than
+        # what sheaf cohomology is designed for.
+        for e_idx, (u, v) in enumerate(self._graph.edges):
+            relation = ""
+            if e_idx < len(self._edge_relations):
+                relation = self._edge_relations[e_idx]
+
+            constraint = self.get_constraint(relation)
+
+            # --- agree_on: property values must match ---
+            if constraint.agree_on:
+                has_disagreement, disagreeing_keys = (
+                    self._has_semantic_disagreement(u, v, relation)
+                )
+                if has_disagreement:
+                    already_reported = any(
+                        c.edge_index == e_idx for c in contradictions
+                    )
+                    if not already_reported:
+                        u_label = self._vertex_labels.get(u, "?")
+                        v_label = self._vertex_labels.get(v, "?")
+                        proof_data = json.dumps({
+                            "edge": e_idx,
+                            "agree_on_violation": disagreeing_keys,
+                        }).encode("utf-8")
+                        proof_id = generate_proof_id(proof_data)
+                        contradictions.append(Contradiction(
+                            severity="HIGH",
+                            location=(u_label, v_label),
+                            edge_index=e_idx,
+                            energy=0.0,
+                            energy_fraction=0.0,
+                            explanation=(
+                                "Constraint violation between '%s' and '%s' (%s): "
+                                "disagreement on %s."
+                                % (u_label, v_label, relation or "related",
+                                   ", ".join(disagreeing_keys))
+                            ),
+                            proof_id=proof_id,
+                        ))
+
+        # --- functional: at most one outgoing edge of this type ---
+        # Use the raw edge data to preserve directionality from the
+        # source database. The SheafGraph may store edges undirected
+        # internally, which would break functional and symmetric checks.
+        if self._edge_data:
+            from collections import defaultdict
+            outgoing_count = defaultdict(list)  # (src_key, rel) -> [target_labels]
+            for src_key, tgt_key, relation, value in self._edge_data:
+                c = self.get_constraint(relation)
+                if c.functional:
+                    tgt_label = self._vertex_key_labels.get(tgt_key, tgt_key)
+                    outgoing_count[(src_key, relation)].append(tgt_label)
+
+            for (node_key, rel), targets in outgoing_count.items():
+                if len(targets) > 1:
+                    node_label = self._vertex_key_labels.get(node_key, node_key)
+                    proof_data = json.dumps({
+                        "functional_violation": node_label,
+                        "relation": rel,
+                        "targets": targets,
+                    }).encode("utf-8")
+                    proof_id = generate_proof_id(proof_data)
+                    contradictions.append(Contradiction(
+                        severity="HIGH",
+                        location=(node_label, ", ".join(targets)),
+                        edge_index=-1,
+                        energy=0.0,
+                        energy_fraction=0.0,
+                        explanation=(
+                            "Functional constraint violation: '%s' has %d "
+                            "%s targets (%s), but %s should be unique."
+                            % (node_label, len(targets), rel,
+                               ", ".join(targets), rel)
+                        ),
+                        proof_id=proof_id,
+                    ))
+
+            # --- symmetric: if (A, B) exists, (B, A) must exist ---
+            # Use raw edge data to preserve directionality. The SheafGraph
+            # may store edges as undirected pairs, which would cause every
+            # edge to appear one-directional and produce false positives.
+            directed_edges = {}  # (src_key, tgt_key, rel) -> True
+            for src_key, tgt_key, relation, value in self._edge_data:
+                c = self.get_constraint(relation)
+                if c.symmetric:
+                    directed_edges[(src_key, tgt_key, relation)] = True
+
+            for (src_key, tgt_key, rel) in directed_edges:
+                if (tgt_key, src_key, rel) not in directed_edges:
+                    src_label = self._vertex_key_labels.get(src_key, src_key)
+                    tgt_label = self._vertex_key_labels.get(tgt_key, tgt_key)
+                    proof_data = json.dumps({
+                        "symmetry_violation": [src_label, tgt_label],
+                        "relation": rel,
+                    }).encode("utf-8")
+                    proof_id = generate_proof_id(proof_data)
+                    contradictions.append(Contradiction(
+                        severity="MODERATE",
+                        location=(src_label, tgt_label),
+                        edge_index=-1,
+                        energy=0.0,
+                        energy_fraction=0.0,
+                        explanation=(
+                            "Symmetry violation: '%s' %s '%s', "
+                            "but '%s' does not %s '%s'."
+                            % (src_label, rel, tgt_label,
+                               tgt_label, rel, src_label)
+                        ),
+                        proof_id=proof_id,
+                    ))
+
         root_data = json.dumps({
             "h1_dim": h1_dim,
             "total_energy": total_energy,
@@ -377,9 +664,8 @@ class SigmaGuard:
         }).encode("utf-8")
         root_proof_id = generate_proof_id(root_data)
 
-        # Build certificate
         certificate = {
-            "version": "sigma-guard-0.1.0",
+            "version": "sigma-guard-0.3.0",
             "proof_id": root_proof_id,
             "h1_dimension": h1_dim,
             "spectral_gap": round(spectral_gap, 6),
@@ -419,22 +705,8 @@ class SigmaGuard:
         """
         Check whether a proposed write would create a contradiction.
 
-        This is the incremental verification path. It adds the proposed
-        edge to the graph, checks whether the NEW edge specifically
-        carries significant obstruction energy, and returns the result.
-
-        The test is edge-specific: we check the energy on the proposed
-        edge itself, not the total graph energy. This avoids false
-        positives in graphs that already have pre-existing contradictions.
-
-        Args:
-            source: Source vertex label
-            target: Target vertex label
-            relation: Edge relation type
-            value: Property value being written
-
-        Returns:
-            WriteCheckResult indicating whether the write is safe.
+        Adds the proposed edge, checks whether the NEW edge carries
+        significant obstruction energy, and returns the result.
         """
         if getattr(self, '_use_standalone', False):
             return self._check_write_standalone(source, target, relation, value)
@@ -447,7 +719,6 @@ class SigmaGuard:
         src_vid = self._vertex_map.get(source)
         tgt_vid = self._vertex_map.get(target)
 
-        # Track what we create so we can roll back
         created_src = False
         created_tgt = False
 
@@ -463,14 +734,10 @@ class SigmaGuard:
             self._vertex_labels[tgt_vid] = target
             created_tgt = True
 
-        # Check if edge already exists
         has_edge = self._graph.has_edge(src_vid, tgt_vid)
 
         if has_edge:
-            # Edge already exists; no new contradiction possible from
-            # this exact edge. Return safe.
             elapsed_us = (time.perf_counter() - t0) * 1_000_000
-            # Roll back any new vertices
             if created_tgt:
                 self._graph.remove_vertex(tgt_vid)
                 del self._vertex_map[target]
@@ -484,26 +751,20 @@ class SigmaGuard:
                 elapsed_us=elapsed_us,
             )
 
-        # Add the proposed edge
         new_edge_idx = self._graph.add_edge(src_vid, tgt_vid, label=relation)
+        self._edge_relations.append(relation)
         self._rebuild_sheaf()
 
-        # Compute per-edge energy with the new edge present
         section = self._build_section_from_claims()
         edge_energies = self._sheaf.dirichlet_energy_per_edge(section)
         total_energy = sum(edge_energies.values())
 
-        # Get energy on the NEW edge specifically
         new_edge_energy = edge_energies.get(new_edge_idx, 0.0)
 
-        # Check semantic disagreement on the new edge
         has_disagreement, disagreeing_keys = (
-            self._has_semantic_disagreement(src_vid, tgt_vid)
+            self._has_semantic_disagreement(src_vid, tgt_vid, relation)
         )
 
-        # The new edge creates a contradiction if:
-        # 1. It carries significant energy AND has semantic disagreement, OR
-        # 2. It carries very high energy (>5% of total), regardless
         energy_fraction = new_edge_energy / (total_energy + 1e-12)
         creates_contradiction = (
             (new_edge_energy > 0.5 and has_disagreement)
@@ -523,24 +784,32 @@ class SigmaGuard:
 
             severity = _classify_severity(energy_fraction)
 
-            if disagreeing_keys:
+            constraint = self.get_constraint(relation)
+            if constraint.acyclic:
+                explanation = (
+                    "Circular dependency detected: '%s' -> '%s' (%s) "
+                    "closes a cycle in a relationship declared acyclic. "
+                    "Energy: %.4f (%.1f%% of total)."
+                    % (source, target, relation or "unknown",
+                       new_edge_energy, energy_fraction * 100)
+                )
+            elif disagreeing_keys:
                 explanation = (
                     "Write '%s' -> '%s' (%s) creates a structural "
-                    "contradiction. '%s' and '%s' disagree on: %s. "
-                    "New edge energy: %.4f (%.1f%% of total)."
-                    % (source, target, relation,
-                       source, target, ", ".join(disagreeing_keys),
+                    "contradiction. Disagreement on: %s. "
+                    "Energy: %.4f (%.1f%% of total)."
+                    % (source, target, relation or "unknown",
+                       ", ".join(disagreeing_keys),
                        new_edge_energy, energy_fraction * 100)
                 )
             else:
                 explanation = (
                     "Write '%s' -> '%s' (%s) creates a structural "
-                    "contradiction. New edge energy: %.4f (%.1f%% of total)."
-                    % (source, target, relation,
+                    "contradiction. Energy: %.4f (%.1f%% of total)."
+                    % (source, target, relation or "unknown",
                        new_edge_energy, energy_fraction * 100)
                 )
 
-            # Roll back: remove the edge and any created vertices
             self._rollback_write(
                 src_vid, tgt_vid, created_src, created_tgt,
                 source, target,
@@ -556,7 +825,6 @@ class SigmaGuard:
                 elapsed_us=elapsed_us,
             )
 
-        # Write is safe. Roll back.
         self._rollback_write(
             src_vid, tgt_vid, created_src, created_tgt,
             source, target,
@@ -574,6 +842,7 @@ class SigmaGuard:
     def _verify_standalone(self) -> Verdict:
         """Verify using the standalone verifier (no SIGMA engine)."""
         from sigma_guard.standalone_verifier import build_sheaf, compute_cohomology
+        from collections import defaultdict
 
         t0 = time.perf_counter()
 
@@ -589,11 +858,10 @@ class SigmaGuard:
         spectral_gap = result["spectral_gap"]
         edge_energies = result["edge_energies"]
 
-        # Build vertex lookup for labels and claims
         vertices = self._parsed_data.get("vertices", [])
         v_index = {}
         v_claims = []
-        v_labels = []  # display labels (title case)
+        v_labels = []
         for i, v in enumerate(vertices):
             vid = v.get("id", v.get("label", str(i)))
             label = v.get("label", vid)
@@ -601,9 +869,9 @@ class SigmaGuard:
             v_claims.append(v.get("claims", {}))
             v_labels.append(label)
 
-        # Build edge list (deduplicated, canonical orientation)
         edges_raw = self._parsed_data.get("edges", [])
         edge_pairs = []
+        edge_rels = []
         seen_edges = set()
         for e in edges_raw:
             src = e.get("source", e.get("from", ""))
@@ -618,10 +886,15 @@ class SigmaGuard:
             if (a, b) not in seen_edges:
                 seen_edges.add((a, b))
                 edge_pairs.append((src, tgt, a, b))
+                edge_rels.append(e.get("relation", ""))
 
-        # Localize contradictions
         contradictions = []
-        if total_energy > 1e-8:
+
+        # --- H^1-based detection (acyclic constraints only) ---
+        has_any_acyclic = any(
+            c.acyclic for c in self._constraints.values()
+        )
+        if has_any_acyclic and h1_dim > 0 and total_energy > 1e-8:
             energy_floor = total_energy * ENERGY_REPORT_FLOOR
 
             ranked = sorted(
@@ -635,20 +908,14 @@ class SigmaGuard:
 
                 src_label, tgt_label, si, ti = edge_pairs[e_idx]
                 fraction = energy / total_energy
+                relation = edge_rels[e_idx] if e_idx < len(edge_rels) else ""
 
-                # Two-criteria filter
-                passes_energy = energy >= energy_floor
+                # Only report edges whose relation is declared acyclic
+                constraint = self.get_constraint(relation)
+                if not constraint.acyclic:
+                    continue
 
-                src_claims = v_claims[si] if si < len(v_claims) else {}
-                tgt_claims = v_claims[ti] if ti < len(v_claims) else {}
-                shared = set(src_claims.keys()) & set(tgt_claims.keys())
-                disagreements = [
-                    k for k in sorted(shared)
-                    if src_claims.get(k) != tgt_claims.get(k)
-                ]
-                has_disagreement = len(disagreements) > 0
-
-                if not passes_energy and not has_disagreement:
+                if energy < energy_floor:
                     continue
 
                 severity = _classify_severity(fraction)
@@ -662,20 +929,9 @@ class SigmaGuard:
                 }).encode("utf-8")
                 proof_id = generate_proof_id(proof_data)
 
-                if disagreements:
-                    explanation = (
-                        "Structural contradiction (H^1 obstruction): "
-                        "'%s' and '%s' disagree on: %s. "
-                        "These claims are individually valid but structurally "
-                        "incompatible."
-                        % (u_label, v_label, ", ".join(disagreements))
-                    )
-                else:
-                    explanation = (
-                        "Structural contradiction (H^1 obstruction) between "
-                        "'%s' and '%s'. Energy=%.4f (%.1f%% of total)."
-                        % (u_label, v_label, energy, fraction * 100)
-                    )
+                explanation = self._generate_standalone_explanation(
+                    u_label, v_label, relation, energy, fraction, [],
+                )
 
                 contradictions.append(Contradiction(
                     severity=severity,
@@ -684,6 +940,127 @@ class SigmaGuard:
                     energy=energy,
                     energy_fraction=fraction,
                     explanation=explanation,
+                    proof_id=proof_id,
+                ))
+
+        # --- Direct graph checks (same as full engine path) ---
+
+        # agree_on: property values must match across edge
+        for e_idx in range(len(edge_pairs)):
+            if e_idx >= len(edge_rels):
+                break
+            relation = edge_rels[e_idx]
+            constraint = self.get_constraint(relation)
+            if not constraint.agree_on:
+                continue
+            src_label, tgt_label, si, ti = edge_pairs[e_idx]
+            src_claims = v_claims[si] if si < len(v_claims) else {}
+            tgt_claims = v_claims[ti] if ti < len(v_claims) else {}
+            disagreeing_keys = []
+            for key in sorted(constraint.agree_on):
+                u_val = src_claims.get(key)
+                v_val = tgt_claims.get(key)
+                if u_val is not None and v_val is not None and u_val != v_val:
+                    disagreeing_keys.append(key)
+            if disagreeing_keys:
+                u_label = v_labels[si] if si < len(v_labels) else src_label
+                v_label = v_labels[ti] if ti < len(v_labels) else tgt_label
+                proof_data = json.dumps({
+                    "edge": e_idx,
+                    "agree_on_violation": disagreeing_keys,
+                }).encode("utf-8")
+                proof_id = generate_proof_id(proof_data)
+                contradictions.append(Contradiction(
+                    severity="HIGH",
+                    location=(u_label, v_label),
+                    edge_index=e_idx,
+                    energy=0.0,
+                    energy_fraction=0.0,
+                    explanation=(
+                        "Constraint violation between '%s' and '%s' (%s): "
+                        "disagreement on %s."
+                        % (u_label, v_label, relation or "related",
+                           ", ".join(disagreeing_keys))
+                    ),
+                    proof_id=proof_id,
+                ))
+
+        # functional: at most one outgoing edge of this type per source
+        outgoing_count = defaultdict(list)
+        for e in edges_raw:
+            src = e.get("source", e.get("from", ""))
+            tgt = e.get("target", e.get("to", ""))
+            rel = e.get("relation", "")
+            if src not in v_index or tgt not in v_index:
+                continue
+            c = self.get_constraint(rel)
+            if c.functional:
+                si = v_index[src]
+                ti = v_index[tgt]
+                src_label = v_labels[si] if si < len(v_labels) else src
+                tgt_label = v_labels[ti] if ti < len(v_labels) else tgt
+                outgoing_count[(src, rel)].append(tgt_label)
+
+        for (node_id, rel), targets in outgoing_count.items():
+            if len(targets) > 1:
+                si = v_index.get(node_id, -1)
+                node_label = v_labels[si] if 0 <= si < len(v_labels) else node_id
+                proof_data = json.dumps({
+                    "functional_violation": node_label,
+                    "relation": rel,
+                    "targets": targets,
+                }).encode("utf-8")
+                proof_id = generate_proof_id(proof_data)
+                contradictions.append(Contradiction(
+                    severity="HIGH",
+                    location=(node_label, ", ".join(targets)),
+                    edge_index=-1,
+                    energy=0.0,
+                    energy_fraction=0.0,
+                    explanation=(
+                        "Functional constraint violation: '%s' has %d "
+                        "%s targets (%s), but %s should be unique."
+                        % (node_label, len(targets), rel,
+                           ", ".join(targets), rel)
+                    ),
+                    proof_id=proof_id,
+                ))
+
+        # symmetric: if (A, B) exists, (B, A) must exist
+        directed_edges = {}
+        for e in edges_raw:
+            src = e.get("source", e.get("from", ""))
+            tgt = e.get("target", e.get("to", ""))
+            rel = e.get("relation", "")
+            if src not in v_index or tgt not in v_index:
+                continue
+            c = self.get_constraint(rel)
+            if c.symmetric:
+                directed_edges[(src, tgt, rel)] = True
+
+        for (src, tgt, rel) in directed_edges:
+            if (tgt, src, rel) not in directed_edges:
+                si = v_index.get(src, -1)
+                ti = v_index.get(tgt, -1)
+                src_label = v_labels[si] if 0 <= si < len(v_labels) else src
+                tgt_label = v_labels[ti] if 0 <= ti < len(v_labels) else tgt
+                proof_data = json.dumps({
+                    "symmetry_violation": [src_label, tgt_label],
+                    "relation": rel,
+                }).encode("utf-8")
+                proof_id = generate_proof_id(proof_data)
+                contradictions.append(Contradiction(
+                    severity="MODERATE",
+                    location=(src_label, tgt_label),
+                    edge_index=-1,
+                    energy=0.0,
+                    energy_fraction=0.0,
+                    explanation=(
+                        "Symmetry violation: '%s' %s '%s', "
+                        "but '%s' does not %s '%s'."
+                        % (src_label, rel, tgt_label,
+                           tgt_label, rel, src_label)
+                    ),
                     proof_id=proof_id,
                 ))
 
@@ -702,7 +1079,7 @@ class SigmaGuard:
         root_proof_id = generate_proof_id(root_data)
 
         certificate = {
-            "version": "sigma-guard-0.1.0",
+            "version": "sigma-guard-0.3.0",
             "proof_id": root_proof_id,
             "h1_dimension": h1_dim,
             "spectral_gap": round(spectral_gap, 6),
@@ -738,10 +1115,8 @@ class SigmaGuard:
 
         t0 = time.perf_counter()
 
-        # Build graph data with the proposed edge added
         data_with_write = copy.deepcopy(self._parsed_data)
 
-        # Build lookup of existing vertex IDs AND labels
         existing_ids = set()
         id_to_label = {}
         label_to_id = {}
@@ -753,7 +1128,6 @@ class SigmaGuard:
             id_to_label[vid] = vlabel
             label_to_id[vlabel] = vid
 
-        # Resolve source/target to existing IDs
         src_id = label_to_id.get(source, source)
         tgt_id = label_to_id.get(target, target)
 
@@ -766,51 +1140,46 @@ class SigmaGuard:
                 {"id": target, "label": target, "claims": {}}
             )
 
-        # Add the proposed edge using resolved IDs
         data_with_write["edges"].append({
             "source": src_id,
             "target": tgt_id,
             "relation": relation,
         })
 
-        # Compute cohomology before and after
-        sheaf_before = build_sheaf(
-            self._parsed_data, stalk_dim=self.stalk_dim, seed=self.seed
-        )
-        result_before = compute_cohomology(sheaf_before)
-
         sheaf_after = build_sheaf(
             data_with_write, stalk_dim=self.stalk_dim, seed=self.seed
         )
         result_after = compute_cohomology(sheaf_after)
 
-        # Check semantic disagreement using both ID and label lookups
-        v_claims_map = {}
-        for v in data_with_write.get("vertices", []):
-            vid = v.get("id", v.get("label", ""))
-            vlabel = v.get("label", vid)
-            claims = v.get("claims", {})
-            v_claims_map[vid] = claims
-            v_claims_map[vlabel] = claims
-
-        src_claims = v_claims_map.get(source, v_claims_map.get(src_id, {}))
-        tgt_claims = v_claims_map.get(target, v_claims_map.get(tgt_id, {}))
-        shared = set(src_claims.keys()) & set(tgt_claims.keys())
-        disagreements = [
-            k for k in sorted(shared)
-            if src_claims.get(k) != tgt_claims.get(k)
-        ]
-        has_disagreement = len(disagreements) > 0
-
-        # Find energy of the new edge specifically
         new_edge_energies = result_after["edge_energies"]
-        new_edge_idx = len(sheaf_before["edge_pairs"])  # last edge added
+        sheaf_before_edges = len(self._parsed_data.get("edges", []))
+        new_edge_idx = sheaf_before_edges
         new_edge_energy = 0.0
         if new_edge_idx < len(new_edge_energies):
             new_edge_energy = new_edge_energies[new_edge_idx]
 
         total_energy = sum(new_edge_energies)
         energy_fraction = new_edge_energy / (total_energy + 1e-12)
+
+        # Check agree_on constraints only
+        constraint = self.get_constraint(relation)
+        disagreements = []
+        if constraint.agree_on:
+            v_claims_map = {}
+            for v in data_with_write.get("vertices", []):
+                vid = v.get("id", v.get("label", ""))
+                vlabel = v.get("label", vid)
+                claims = v.get("claims", {})
+                v_claims_map[vid] = claims
+                v_claims_map[vlabel] = claims
+            src_claims = v_claims_map.get(source, v_claims_map.get(src_id, {}))
+            tgt_claims = v_claims_map.get(target, v_claims_map.get(tgt_id, {}))
+            for key in sorted(constraint.agree_on):
+                u_val = src_claims.get(key)
+                v_val = tgt_claims.get(key)
+                if u_val is not None and v_val is not None and u_val != v_val:
+                    disagreements.append(key)
+        has_disagreement = len(disagreements) > 0
 
         creates_contradiction = (
             (new_edge_energy > 0.5 and has_disagreement)
@@ -829,20 +1198,28 @@ class SigmaGuard:
 
             severity = _classify_severity(energy_fraction)
 
-            if disagreements:
+            if constraint.acyclic:
+                explanation = (
+                    "Circular dependency detected: '%s' -> '%s' (%s) "
+                    "closes a cycle in a relationship declared acyclic. "
+                    "Energy: %.4f (%.1f%% of total)."
+                    % (source, target, relation or "unknown",
+                       new_edge_energy, energy_fraction * 100)
+                )
+            elif disagreements:
                 explanation = (
                     "Write '%s' -> '%s' (%s) creates a structural "
-                    "contradiction. '%s' and '%s' disagree on: %s. "
-                    "New edge energy: %.4f (%.1f%% of total)."
-                    % (source, target, relation,
-                       source, target, ", ".join(disagreements),
+                    "contradiction. Disagreement on: %s. "
+                    "Energy: %.4f (%.1f%% of total)."
+                    % (source, target, relation or "unknown",
+                       ", ".join(disagreements),
                        new_edge_energy, energy_fraction * 100)
                 )
             else:
                 explanation = (
                     "Write '%s' -> '%s' (%s) creates a structural "
-                    "contradiction. New edge energy: %.4f (%.1f%% of total)."
-                    % (source, target, relation,
+                    "contradiction. Energy: %.4f (%.1f%% of total)."
+                    % (source, target, relation or "unknown",
                        new_edge_energy, energy_fraction * 100)
                 )
 
@@ -874,8 +1251,7 @@ class SigmaGuard:
         source_label: str,
         target_label: str,
     ) -> None:
-        """Roll back a proposed write by removing the new edge and vertices."""
-        # Remove vertices we created (this also removes incident edges)
+        """Roll back a proposed write."""
         if created_tgt:
             self._graph.remove_vertex(tgt_vid)
             self._vertex_map.pop(target_label, None)
@@ -885,18 +1261,9 @@ class SigmaGuard:
             self._vertex_map.pop(source_label, None)
             self._vertex_labels.pop(src_vid, None)
 
-        # If we only added an edge (no new vertices), we need to rebuild
-        # the graph without that edge. Since SheafGraph doesn't have
-        # remove_edge, we rebuild from scratch.
-        if not created_src and not created_tgt:
-            # The edge was added between existing vertices.
-            # Rebuild the sheaf from current graph state.
-            # The edge is still in the graph, but rebuilding the sheaf
-            # will pick it up. We need to actually remove it.
-            # SheafGraph has remove_vertex but not remove_edge.
-            # For now, just rebuild the sheaf (the edge persists but
-            # the check_write result is already computed).
-            pass
+        # Pop the relation we appended
+        if self._edge_relations:
+            self._edge_relations.pop()
 
         self._rebuild_sheaf()
 
@@ -944,65 +1311,108 @@ class SigmaGuard:
         sheaf = CellularSheaf(self._graph, default_stalk_dim=d)
 
         for e_idx, (u, v) in enumerate(self._graph.edges):
+            relation = self._edge_relations[e_idx] if e_idx < len(self._edge_relations) else ""
             u_data = self._graph._vertex_data.get(u, {})
             v_data = self._graph._vertex_data.get(v, {})
 
-            if u_data and v_data:
-                r_uv, r_vu = self._compute_restriction_maps(
-                    u_data, v_data, d, rng
-                )
-                sheaf.set_restriction(u, e_idx, r_uv)
-                sheaf.set_restriction(v, e_idx, r_vu)
-            else:
-                eye = np.eye(d, dtype=np.float64)
-                sheaf.set_restriction(u, e_idx, eye)
-                sheaf.set_restriction(v, e_idx, eye)
+            r_uv, r_vu = self._compute_restriction_maps(
+                u_data, v_data, relation, d, rng
+            )
+            sheaf.set_restriction(u, e_idx, r_uv)
+            sheaf.set_restriction(v, e_idx, r_vu)
 
         self._sheaf = sheaf
         self._cohomology = CohomologyComputer(sheaf)
 
     def _generate_explanation(
-        self, loc: Dict, disagreeing_keys: Optional[List[str]] = None
+        self,
+        loc: Dict,
+        relation: str = "",
+        disagreeing_keys: Optional[List[str]] = None,
     ) -> str:
         """Generate a human-readable explanation for a contradiction."""
         labels = loc.get("vertex_labels", ("?", "?"))
         energy = loc.get("energy", 0)
         fraction = loc.get("fraction", 0)
 
-        u_vid = loc.get("endpoints", (None, None))[0]
-        v_vid = loc.get("endpoints", (None, None))[1]
+        constraint = self.get_constraint(relation)
 
-        # Use pre-computed disagreeing keys if provided
-        if disagreeing_keys:
+        if constraint.acyclic:
             return (
-                "Structural contradiction (H^1 obstruction): "
-                "'%s' and '%s' disagree on: %s. "
-                "These claims are individually valid but structurally "
-                "incompatible."
-                % (labels[0], labels[1], ", ".join(disagreeing_keys))
+                "Circular dependency: '%s' and '%s' are connected "
+                "via '%s', which is declared acyclic. This edge is "
+                "part of a cycle. Energy: %.4f (%.1f%% of total)."
+                % (labels[0], labels[1], relation or "this relationship",
+                   energy, fraction * 100)
             )
 
-        # Fall back to checking the data directly
-        u_data = self._graph._vertex_data.get(u_vid, {}) if u_vid is not None else {}
-        v_data = self._graph._vertex_data.get(v_vid, {}) if v_vid is not None else {}
+        if disagreeing_keys:
+            return (
+                "Constraint violation between '%s' and '%s' (%s): "
+                "disagreement on %s. Energy: %.4f (%.1f%% of total)."
+                % (labels[0], labels[1], relation or "related",
+                   ", ".join(disagreeing_keys),
+                   energy, fraction * 100)
+            )
 
-        if isinstance(u_data, dict) and isinstance(v_data, dict):
-            shared_keys = set(u_data.keys()) & set(v_data.keys())
-            disagreements = [
-                k for k in sorted(shared_keys)
-                if u_data.get(k) != v_data.get(k)
-            ]
-            if disagreements:
-                return (
-                    "Structural contradiction (H^1 obstruction): "
-                    "'%s' and '%s' disagree on: %s. "
-                    "These claims are individually valid but structurally "
-                    "incompatible."
-                    % (labels[0], labels[1], ", ".join(disagreements))
-                )
+        if constraint.symmetric:
+            return (
+                "Symmetry violation: '%s' and '%s' are connected "
+                "via '%s', which should be bidirectional. "
+                "Energy: %.4f (%.1f%% of total)."
+                % (labels[0], labels[1], relation or "this relationship",
+                   energy, fraction * 100)
+            )
 
         return (
-            "Structural contradiction (H^1 obstruction) between "
-            "'%s' and '%s'. Energy=%.4f (%.1f%% of total)."
-            % (labels[0], labels[1], energy, fraction * 100)
+            "Structural contradiction between '%s' and '%s' "
+            "via '%s'. Energy: %.4f (%.1f%% of total)."
+            % (labels[0], labels[1], relation or "related",
+               energy, fraction * 100)
+        )
+
+    def _generate_standalone_explanation(
+        self,
+        u_label: str,
+        v_label: str,
+        relation: str,
+        energy: float,
+        fraction: float,
+        disagreements: List[str],
+    ) -> str:
+        """Generate explanation for standalone verifier results."""
+        constraint = self.get_constraint(relation)
+
+        if constraint.acyclic:
+            return (
+                "Circular dependency: '%s' and '%s' are connected "
+                "via '%s', which is declared acyclic. This edge is "
+                "part of a cycle. Energy: %.4f (%.1f%% of total)."
+                % (u_label, v_label, relation or "this relationship",
+                   energy, fraction * 100)
+            )
+
+        if disagreements:
+            return (
+                "Constraint violation between '%s' and '%s' (%s): "
+                "disagreement on %s. Energy: %.4f (%.1f%% of total)."
+                % (u_label, v_label, relation or "related",
+                   ", ".join(disagreements),
+                   energy, fraction * 100)
+            )
+
+        if constraint.symmetric:
+            return (
+                "Symmetry violation: '%s' and '%s' are connected "
+                "via '%s', which should be bidirectional. "
+                "Energy: %.4f (%.1f%% of total)."
+                % (u_label, v_label, relation or "this relationship",
+                   energy, fraction * 100)
+            )
+
+        return (
+            "Structural contradiction between '%s' and '%s' "
+            "via '%s'. Energy: %.4f (%.1f%% of total)."
+            % (u_label, v_label, relation or "related",
+               energy, fraction * 100)
         )

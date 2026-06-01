@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sigma-guard"
-version = "0.2.0"
+version = "0.3.0"
 description = "Deterministic structural verification for knowledge graphs, agent state, and LLM output using sheaf cohomology. MCP server included."
 readme = "README.md"
 license = {text = "BSL-1.1"}
@@ -54,7 +54,8 @@ dependencies = [
 mcp = ["mcp>=1.6", "uvicorn>=0.20"]
 memgraph = ["gqlalchemy>=1.0"]
 neo4j = ["neo4j>=5.0"]
-all = ["mcp>=1.6", "uvicorn>=0.20", "gqlalchemy>=1.0", "neo4j>=5.0"]
+falkordb = ["falkordb>=1.0"]
+all = ["mcp>=1.6", "uvicorn>=0.20", "gqlalchemy>=1.0", "neo4j>=5.0", "falkordb>=1.0"]
 dev = ["pytest>=7.0", "pytest-cov"]
 
 [project.scripts]
