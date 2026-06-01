@@ -81,8 +81,21 @@ class RelationConstraint:
         symmetric: If True, the relation must be bidirectional.
             A BORDERS B requires B BORDERS A. Asymmetry is flagged.
         functional: If True, each source node should have at most
-            one target for this relation. A country with two
-            capitals (two HAS_CAPITAL edges) is flagged.
+            one target for this relation. Shorthand for max_targets=1.
+        transitive: If True, the relation must satisfy transitivity.
+            If A->B and B->C exist, A->C must also exist. Use for
+            IsA, SubclassOf, PartOf hierarchies. Only checks one
+            hop (direct transitivity gaps); does not compute the
+            full transitive closure.
+        min_targets: Minimum outgoing edges of this type per source
+            node. Use for "every employee must have at least 1
+            manager" or "every person has exactly 2 biological
+            parents" (combine with max_targets=2).
+        max_targets: Maximum outgoing edges of this type per source
+            node. Generalizes functional. Use for "a board has at
+            most 15 directors" or "a country has at most 1 capital."
+            If functional=True and max_targets is not set,
+            max_targets defaults to 1.
         agree_on: Set of property keys that MUST agree across this
             edge. Only use when the relationship semantically
             requires agreement (e.g., two references to the same
@@ -95,8 +108,19 @@ class RelationConstraint:
     acyclic: bool = False
     symmetric: bool = False
     functional: bool = False
+    transitive: bool = False
+    min_targets: Optional[int] = None
+    max_targets: Optional[int] = None
     agree_on: Set[str] = field(default_factory=set)
     coupling_strength: float = 0.5
+
+    def effective_max_targets(self) -> Optional[int]:
+        """Return the effective max targets, accounting for functional."""
+        if self.max_targets is not None:
+            return self.max_targets
+        if self.functional:
+            return 1
+        return None
 
 
 # Default constraints for common relationship types.
@@ -584,42 +608,137 @@ class SigmaGuard:
                             proof_id=proof_id,
                         ))
 
-        # --- functional: at most one outgoing edge of this type ---
-        # Use the raw edge data to preserve directionality from the
-        # source database. The SheafGraph may store edges undirected
-        # internally, which would break functional and symmetric checks.
+        # --- cardinality: min/max outgoing edges of this type ---
+        # Generalizes the old functional check. functional=True is
+        # shorthand for max_targets=1. New: min_targets and max_targets
+        # support "a board has 5-15 directors" or "exactly 2 parents."
         if self._edge_data:
             from collections import defaultdict
             outgoing_count = defaultdict(list)  # (src_key, rel) -> [target_labels]
             for src_key, tgt_key, relation, value in self._edge_data:
                 c = self.get_constraint(relation)
-                if c.functional:
+                if c.effective_max_targets() is not None or c.min_targets is not None:
                     tgt_label = self._vertex_key_labels.get(tgt_key, tgt_key)
                     outgoing_count[(src_key, relation)].append(tgt_label)
 
             for (node_key, rel), targets in outgoing_count.items():
-                if len(targets) > 1:
-                    node_label = self._vertex_key_labels.get(node_key, node_key)
+                c = self.get_constraint(rel)
+                node_label = self._vertex_key_labels.get(node_key, node_key)
+                count = len(targets)
+                eff_max = c.effective_max_targets()
+                eff_min = c.min_targets
+
+                # Check upper bound
+                if eff_max is not None and count > eff_max:
                     proof_data = json.dumps({
-                        "functional_violation": node_label,
+                        "cardinality_violation": node_label,
                         "relation": rel,
+                        "count": count,
+                        "max": eff_max,
                         "targets": targets,
                     }).encode("utf-8")
                     proof_id = generate_proof_id(proof_data)
+                    if eff_max == 1:
+                        explanation = (
+                            "Functional constraint violation: '%s' has %d "
+                            "%s targets (%s), but %s should be unique."
+                            % (node_label, count, rel,
+                               ", ".join(targets), rel)
+                        )
+                    else:
+                        explanation = (
+                            "Cardinality violation: '%s' has %d %s targets, "
+                            "but the maximum allowed is %d."
+                            % (node_label, count, rel, eff_max)
+                        )
                     contradictions.append(Contradiction(
                         severity="HIGH",
                         location=(node_label, ", ".join(targets)),
                         edge_index=-1,
                         energy=0.0,
                         energy_fraction=0.0,
+                        explanation=explanation,
+                        proof_id=proof_id,
+                    ))
+
+                # Check lower bound
+                if eff_min is not None and count < eff_min:
+                    proof_data = json.dumps({
+                        "cardinality_violation": node_label,
+                        "relation": rel,
+                        "count": count,
+                        "min": eff_min,
+                    }).encode("utf-8")
+                    proof_id = generate_proof_id(proof_data)
+                    contradictions.append(Contradiction(
+                        severity="MODERATE",
+                        location=(node_label, "%d %s edges" % (count, rel)),
+                        edge_index=-1,
+                        energy=0.0,
+                        energy_fraction=0.0,
                         explanation=(
-                            "Functional constraint violation: '%s' has %d "
-                            "%s targets (%s), but %s should be unique."
-                            % (node_label, len(targets), rel,
-                               ", ".join(targets), rel)
+                            "Cardinality violation: '%s' has %d %s targets, "
+                            "but the minimum required is %d."
+                            % (node_label, count, rel, eff_min)
                         ),
                         proof_id=proof_id,
                     ))
+
+            # --- transitive: if (A, B) and (B, C) exist, (A, C) must exist ---
+            # Only checks one-hop gaps (A->B->C without A->C).
+            # Does not compute the full transitive closure.
+            for rel_type, constraint in self._constraints.items():
+                if not constraint.transitive:
+                    continue
+                # Build adjacency for this relation type
+                adj = {}       # src_key -> set of tgt_keys
+                edge_set = set()  # (src_key, tgt_key) for fast lookup
+                for src_key, tgt_key, relation, value in self._edge_data:
+                    if relation.upper().replace(" ", "_") == rel_type or relation == rel_type:
+                        adj.setdefault(src_key, set()).add(tgt_key)
+                        edge_set.add((src_key, tgt_key))
+
+                # For each A->B->C, check A->C
+                gaps_found = 0
+                max_gaps = 50  # cap to avoid flooding on large ontologies
+                for a_key, b_keys in adj.items():
+                    if gaps_found >= max_gaps:
+                        break
+                    for b_key in b_keys:
+                        if gaps_found >= max_gaps:
+                            break
+                        c_keys = adj.get(b_key, set())
+                        for c_key in c_keys:
+                            if c_key == a_key:
+                                continue  # skip self-loops
+                            if (a_key, c_key) not in edge_set:
+                                gaps_found += 1
+                                if gaps_found > max_gaps:
+                                    break
+                                a_label = self._vertex_key_labels.get(a_key, a_key)
+                                b_label = self._vertex_key_labels.get(b_key, b_key)
+                                c_label = self._vertex_key_labels.get(c_key, c_key)
+                                proof_data = json.dumps({
+                                    "transitivity_gap": [a_label, b_label, c_label],
+                                    "relation": rel_type,
+                                }).encode("utf-8")
+                                proof_id = generate_proof_id(proof_data)
+                                contradictions.append(Contradiction(
+                                    severity="MODERATE",
+                                    location=(a_label, c_label),
+                                    edge_index=-1,
+                                    energy=0.0,
+                                    energy_fraction=0.0,
+                                    explanation=(
+                                        "Transitivity gap: '%s' %s '%s' and "
+                                        "'%s' %s '%s', but '%s' does not "
+                                        "%s '%s'."
+                                        % (a_label, rel_type, b_label,
+                                           b_label, rel_type, c_label,
+                                           a_label, rel_type, c_label)
+                                    ),
+                                    proof_id=proof_id,
+                                ))
 
             # --- symmetric: if (A, B) exists, (B, A) must exist ---
             # Use raw edge data to preserve directionality. The SheafGraph
@@ -665,7 +784,7 @@ class SigmaGuard:
         root_proof_id = generate_proof_id(root_data)
 
         certificate = {
-            "version": "sigma-guard-0.3.0",
+            "version": "sigma-guard-0.3.1",
             "proof_id": root_proof_id,
             "h1_dimension": h1_dim,
             "spectral_gap": round(spectral_gap, 6),
@@ -985,7 +1104,7 @@ class SigmaGuard:
                     proof_id=proof_id,
                 ))
 
-        # functional: at most one outgoing edge of this type per source
+        # functional/cardinality: min/max outgoing edges per source
         outgoing_count = defaultdict(list)
         for e in edges_raw:
             src = e.get("source", e.get("from", ""))
@@ -994,34 +1113,70 @@ class SigmaGuard:
             if src not in v_index or tgt not in v_index:
                 continue
             c = self.get_constraint(rel)
-            if c.functional:
+            if c.effective_max_targets() is not None or c.min_targets is not None:
                 si = v_index[src]
                 ti = v_index[tgt]
-                src_label = v_labels[si] if si < len(v_labels) else src
                 tgt_label = v_labels[ti] if ti < len(v_labels) else tgt
                 outgoing_count[(src, rel)].append(tgt_label)
 
         for (node_id, rel), targets in outgoing_count.items():
-            if len(targets) > 1:
-                si = v_index.get(node_id, -1)
-                node_label = v_labels[si] if 0 <= si < len(v_labels) else node_id
+            c = self.get_constraint(rel)
+            count = len(targets)
+            eff_max = c.effective_max_targets()
+            eff_min = c.min_targets
+            si = v_index.get(node_id, -1)
+            node_label = v_labels[si] if 0 <= si < len(v_labels) else node_id
+
+            if eff_max is not None and count > eff_max:
                 proof_data = json.dumps({
-                    "functional_violation": node_label,
+                    "cardinality_violation": node_label,
                     "relation": rel,
+                    "count": count,
+                    "max": eff_max,
                     "targets": targets,
                 }).encode("utf-8")
                 proof_id = generate_proof_id(proof_data)
+                if eff_max == 1:
+                    explanation = (
+                        "Functional constraint violation: '%s' has %d "
+                        "%s targets (%s), but %s should be unique."
+                        % (node_label, count, rel,
+                           ", ".join(targets), rel)
+                    )
+                else:
+                    explanation = (
+                        "Cardinality violation: '%s' has %d %s targets, "
+                        "but the maximum allowed is %d."
+                        % (node_label, count, rel, eff_max)
+                    )
                 contradictions.append(Contradiction(
                     severity="HIGH",
                     location=(node_label, ", ".join(targets)),
                     edge_index=-1,
                     energy=0.0,
                     energy_fraction=0.0,
+                    explanation=explanation,
+                    proof_id=proof_id,
+                ))
+
+            if eff_min is not None and count < eff_min:
+                proof_data = json.dumps({
+                    "cardinality_violation": node_label,
+                    "relation": rel,
+                    "count": count,
+                    "min": eff_min,
+                }).encode("utf-8")
+                proof_id = generate_proof_id(proof_data)
+                contradictions.append(Contradiction(
+                    severity="MODERATE",
+                    location=(node_label, "%d %s edges" % (count, rel)),
+                    edge_index=-1,
+                    energy=0.0,
+                    energy_fraction=0.0,
                     explanation=(
-                        "Functional constraint violation: '%s' has %d "
-                        "%s targets (%s), but %s should be unique."
-                        % (node_label, len(targets), rel,
-                           ", ".join(targets), rel)
+                        "Cardinality violation: '%s' has %d %s targets, "
+                        "but the minimum required is %d."
+                        % (node_label, count, rel, eff_min)
                     ),
                     proof_id=proof_id,
                 ))
@@ -1064,6 +1219,66 @@ class SigmaGuard:
                     proof_id=proof_id,
                 ))
 
+        # transitive: if (A, B) and (B, C) exist, (A, C) must exist
+        for rel_type, constraint in self._constraints.items():
+            if not constraint.transitive:
+                continue
+            adj = {}
+            edge_set = set()
+            for e in edges_raw:
+                src = e.get("source", e.get("from", ""))
+                tgt = e.get("target", e.get("to", ""))
+                rel = e.get("relation", "")
+                if src not in v_index or tgt not in v_index:
+                    continue
+                if rel.upper().replace(" ", "_") == rel_type or rel == rel_type:
+                    adj.setdefault(src, set()).add(tgt)
+                    edge_set.add((src, tgt))
+
+            gaps_found = 0
+            max_gaps = 50
+            for a_key, b_keys in adj.items():
+                if gaps_found >= max_gaps:
+                    break
+                for b_key in b_keys:
+                    if gaps_found >= max_gaps:
+                        break
+                    c_keys = adj.get(b_key, set())
+                    for c_key in c_keys:
+                        if c_key == a_key:
+                            continue
+                        if (a_key, c_key) not in edge_set:
+                            gaps_found += 1
+                            if gaps_found > max_gaps:
+                                break
+                            a_si = v_index.get(a_key, -1)
+                            b_si = v_index.get(b_key, -1)
+                            c_si = v_index.get(c_key, -1)
+                            a_label = v_labels[a_si] if 0 <= a_si < len(v_labels) else a_key
+                            b_label = v_labels[b_si] if 0 <= b_si < len(v_labels) else b_key
+                            c_label = v_labels[c_si] if 0 <= c_si < len(v_labels) else c_key
+                            proof_data = json.dumps({
+                                "transitivity_gap": [a_label, b_label, c_label],
+                                "relation": rel_type,
+                            }).encode("utf-8")
+                            proof_id = generate_proof_id(proof_data)
+                            contradictions.append(Contradiction(
+                                severity="MODERATE",
+                                location=(a_label, c_label),
+                                edge_index=-1,
+                                energy=0.0,
+                                energy_fraction=0.0,
+                                explanation=(
+                                    "Transitivity gap: '%s' %s '%s' and "
+                                    "'%s' %s '%s', but '%s' does not "
+                                    "%s '%s'."
+                                    % (a_label, rel_type, b_label,
+                                       b_label, rel_type, c_label,
+                                       a_label, rel_type, c_label)
+                                ),
+                                proof_id=proof_id,
+                            ))
+
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
         n_vertices = sheaf["n_vertices"]
@@ -1079,7 +1294,7 @@ class SigmaGuard:
         root_proof_id = generate_proof_id(root_data)
 
         certificate = {
-            "version": "sigma-guard-0.3.0",
+            "version": "sigma-guard-0.3.1",
             "proof_id": root_proof_id,
             "h1_dimension": h1_dim,
             "spectral_gap": round(spectral_gap, 6),

@@ -84,7 +84,7 @@ class Verdict:
 
     def summary(self) -> str:
         lines = [
-            "SIGMA Graph Guard v0.3.0",
+            "SIGMA Graph Guard v0.3.1",
             "=" * 40,
             "Graph: %d vertices, %d edges"
             % (

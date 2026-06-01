@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sigma-guard"
-version = "0.3.0"
+version = "0.3.1"
 description = "Deterministic structural verification for knowledge graphs, agent state, and LLM output using sheaf cohomology. MCP server included."
 readme = "README.md"
 license = {text = "BSL-1.1"}
