@@ -17,7 +17,7 @@ Three tools: verify_graph (audit a knowledge graph), verify_claims
 graph mutations). Returns cryptographic proof receipts. Zero ML, zero
 GPU, 35 microseconds per edit at 5M vertices. Model-agnostic.
 
-# GitHub: https://github.com/invariant-research/sigma-guard
+# GitHub: https://github.com/Jasonleonardvolk/sigma-guard
 # Homepage: https://invariant.pro
 # Install: pip install sigma-guard[mcp]
 # Transport: stdio, Streamable HTTP
@@ -32,7 +32,7 @@ GPU, 35 microseconds per edit at 5M vertices. Model-agnostic.
 #
 #   npm install -g @smithery/cli
 #   smithery auth login
-#   smithery mcp publish "https://invariant.pro/mcp" -n invariant-research/sigma-guard
+#   smithery mcp publish "https://invariant.pro/mcp" -n jasonlvolk/sigma-guard
 #
 # Option B: PR to community-servers repo
 # Fork: https://github.com/smithery-ai/community-servers-1
@@ -47,7 +47,7 @@ Zero ML.
 - **Install:** `pip install sigma-guard[mcp]`
 - **Run:** `sigma-guard-mcp`
 - **Transport:** stdio, Streamable HTTP
-- **Repository:** https://github.com/invariant-research/sigma-guard
+- **Repository:** https://github.com/Jasonleonardvolk/sigma-guard
 - **Homepage:** https://invariant.pro
 
 
@@ -65,7 +65,7 @@ contradictions that schema validation misses. Tools: verify_graph,
 verify_claims, check_write. Cryptographic proof receipts. Zero ML.
 35us per edit at 5M vertices.
 
-# GitHub: https://github.com/invariant-research/sigma-guard
+# GitHub: https://github.com/Jasonleonardvolk/sigma-guard
 # Homepage: https://invariant.pro
 # Category: Data Science & ML
 
@@ -76,7 +76,7 @@ verify_claims, check_write. Cryptographic proof receipts. Zero ML.
 # Fork: https://github.com/punkpeye/awesome-mcp-servers
 # Find the appropriate category section and add this line:
 
-- [sigma-guard](https://github.com/invariant-research/sigma-guard) - Deterministic structural contradiction detection for knowledge graphs and LLM output using sheaf cohomology. Verify graphs, check claims, gate mutations. Cryptographic proofs. Zero ML.
+- [sigma-guard](https://github.com/Jasonleonardvolk/sigma-guard) - Deterministic structural contradiction detection for knowledge graphs and LLM output using sheaf cohomology. Verify graphs, check claims, gate mutations. Cryptographic proofs. Zero ML.
 
 # PR title: Add sigma-guard: deterministic structural verification for graphs and LLM output
 # PR body:

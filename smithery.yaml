@@ -1,0 +1,91 @@
+# smithery.yaml
+# Smithery.ai registry configuration for sigma-guard MCP server
+# See: https://smithery.ai/docs/publishing
+
+version: 1
+name: sigma-guard
+displayName: "sigma-guard"
+description: >
+  Deterministic structural contradiction detection for knowledge graphs,
+  agent state, and LLM output. Uses cellular sheaf cohomology (H^1) to
+  find contradictions that schema validation and constraint engines miss.
+  Three tools: verify_graph (audit a knowledge graph), verify_claims
+  (check LLM output before emission), check_write (pre-commit gate for
+  graph mutations). Returns Ed25519-signed cryptographic proof receipts
+  (SVR format). Zero ML, zero GPU, 35 microseconds per edit at 5M
+  vertices. Model-agnostic. Supports Neo4j, Memgraph, and FalkorDB
+  graph database adapters.
+
+category: developer-tools
+
+tags:
+  - mcp
+  - verification
+  - knowledge-graph
+  - contradiction-detection
+  - sheaf-cohomology
+  - hallucination-detection
+  - agent-verification
+  - llm-verification
+  - neo4j
+  - deterministic
+
+# Installation method
+install:
+  type: pypi
+  package: sigma-guard[mcp]
+  command: sigma-guard-mcp
+
+# Requirements
+requirements:
+  python: ">=3.9"
+
+# Configuration for Claude Desktop
+claude:
+  config:
+    mcpServers:
+      sigma-guard:
+        command: sigma-guard-mcp
+        args: []
+
+# Configuration for Cursor
+cursor:
+  config:
+    mcpServers:
+      sigma-guard:
+        command: sigma-guard-mcp
+        args: []
+
+# Metadata
+# Repository URL resolved: Jasonleonardvolk is canonical (O.13 closed)
+author: Jason Volk
+homepage: https://invariant.pro
+repository: https://github.com/Jasonleonardvolk/sigma-guard
+license: BSL-1.1
+
+keywords:
+  - mcp
+  - model-context-protocol
+  - graph-database
+  - contradiction-detection
+  - sheaf-cohomology
+  - verification
+  - cryptographic-receipts
+  - deterministic
+  - agent-safety
+
+# Documentation
+documentation:
+  readme: README.md
+
+# Examples
+examples:
+  - name: "Verify a knowledge graph"
+    description: "Detect structural contradictions in a knowledge graph"
+    tool: verify_graph
+  - name: "Check LLM claims"
+    description: "Verify LLM output claims before emission"
+    tool: verify_claims
+  - name: "Gate a graph mutation"
+    description: "Pre-commit verification before writing to graph"
+    tool: check_write

@@ -65,9 +65,9 @@ sigma-guard-mcp = "sigma_guard.mcp_server:main"
 
 [project.urls]
 Homepage = "https://invariant.pro"
-Repository = "https://github.com/invariant-research/sigma-guard"
+Repository = "https://github.com/Jasonleonardvolk/sigma-guard"
 Documentation = "https://invariant.pro/docs/sigma-guard"
-Issues = "https://github.com/invariant-research/sigma-guard/issues"
+Issues = "https://github.com/Jasonleonardvolk/sigma-guard/issues"
 MCP = "https://invariant.pro/docs/sigma-guard/mcp"
 
 [tool.setuptools.packages.find]
