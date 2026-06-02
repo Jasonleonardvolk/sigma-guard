@@ -1,0 +1,52 @@
+{
+  "_note": "EXAMPLE RECEIPT for documentation purposes. This receipt demonstrates the SVR format structure. The signature is a placeholder and will not verify. For real receipts, sigma-guard generates valid Ed25519 signatures.",
+  "svr_version": "1.0",
+  "receipt_id": "SG-20260602-A1B2C3D4",
+  "receipt_type": "graph_verification",
+  "mode": "mcp_tool_call",
+  "receipt_status": "evaluation",
+  "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "source_bundle_hash": "7d865e959b2466918c9863afca942d0fb89d7c9ac0c99bafc3749504ded97730",
+  "verification_method": "deterministic_algebraic",
+  "verdict": "inconsistencies_detected",
+  "safe_to_rely": false,
+  "filing_safety_status": "UNSAFE_TO_SUBMIT",
+  "reason": "Structural contradiction detected: two nodes assert incompatible values for the same property across a governing relationship. H^1 dimension = 1.",
+  "items_checked": 3,
+  "items_passed": 2,
+  "items_failed": 1,
+  "items_excluded": 0,
+  "checked_items": [
+    {
+      "item_id": "1",
+      "claim_or_authority": "Policy.approved_vendor = Supplier_A",
+      "verdict": "consistent",
+      "reason": "Claim is locally well-formed and consistent with node constraints."
+    },
+    {
+      "item_id": "2",
+      "claim_or_authority": "Procurement.approved_vendor = Supplier_B",
+      "verdict": "consistent",
+      "reason": "Claim is locally well-formed and consistent with node constraints."
+    },
+    {
+      "item_id": "3",
+      "claim_or_authority": "Policy --[governs]--> Procurement: approved_vendor agreement",
+      "verdict": "contradicted",
+      "reason": "Restriction map across edge (Policy, Procurement) yields non-trivial H^1 obstruction. Policy asserts approved_vendor = Supplier_A; Procurement asserts approved_vendor = Supplier_B. These cannot be made globally consistent under the governs relation."
+    }
+  ],
+  "h1_dimension": 1,
+  "cells": 3,
+  "total_dirichlet_energy": 2.0,
+  "lambda2": 1.0,
+  "elapsed_ms": 0.42,
+  "engine_version": "0.3.1",
+  "timestamp_utc": "2026-06-02T12:00:00.000Z",
+  "replay_seed": "a4f8e2c1",
+  "deterministic_replay": true,
+  "parameter_count": 0,
+  "public_key": "0000000000000000000000000000000000000000000000000000000000000000",
+  "signature": "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "signature_status": "UNSIGNED"
+}
