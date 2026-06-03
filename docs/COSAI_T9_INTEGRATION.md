@@ -1,4 +1,4 @@
-# Implementation Note: SVR Receipt Verification at the T9 Trust Boundary
+# Implementation Note: SVR Receipt Verification at the T4/T9 Trust Boundary
 
 ## Where in the call path does receipt verification happen?
 
@@ -16,9 +16,17 @@ The cosai-mcp CoSAIStack enforces checks at three points:
                          ^^^ SVR verification inserts HERE
 ```
 
-The T9 trust boundary is `check_response()`. This is the moment between
-"tool produced output" and "output is chained downstream." The existing
-check catches character-level threats (injection patterns, control chars).
+The T4/T9 trust boundary is `check_response()`. This is the moment
+between "tool produced output" and "output is chained downstream."
+
+The existing check runs `ResponseBoundaryGuard`
+(`cosai_mcp/middleware/boundary.py`): regex-based injection pattern
+scanning (prompt overrides, system tokens, exfiltration markers). It
+flags injection attempts; it does not sanitize content or strip
+control characters. (cosai-mcp provides a separate
+`LLMOutputSanitizer` in `trust.py` for character-level sanitization,
+but that class is not wired into `check_response()`.)
+
 SVR adds claim-level verification: are the assertions in the output
 structurally consistent?
 
@@ -115,9 +123,14 @@ check_response(body, session_id, receipt)
        - Receipt travels with output to next consumer
 ```
 
+Note: check_response() does not raise exceptions. It logs findings
+and returns. The caller decides how to handle a flagged result. The
+SVR gate follows this same pattern: it returns an SVRGateResult
+rather than raising, preserving the existing non-blocking contract.
+
 ## Conformance test: "receipt validates before chain continues"
 
-The falsifiable test Rags requested. Four assertions:
+The falsifiable test Rags requested. Five assertions:
 
 | Test | Input | Expected |
 |---|---|---|
@@ -125,6 +138,7 @@ The falsifiable test Rags requested. Four assertions:
 | Tampered receipt | Missing required fields | Gate blocks, chain stops |
 | Wrong input hash | Receipt hash does not match tool output | Gate blocks, chain stops |
 | Unsafe verdict | safe_to_rely=False | Gate blocks, chain stops |
+| Empty receipt | No fields at all | Gate blocks, chain stops |
 
 Running the conformance test:
 
@@ -138,6 +152,7 @@ valid_receipt_passes: PASS
 tampered_receipt_blocked: PASS
 wrong_hash_blocked: PASS
 unsafe_verdict_blocked: PASS
+empty_receipt_blocked: PASS
 conformance: PASS
 ```
 
@@ -152,9 +167,9 @@ probe could:
 2. Check if the response includes an SVR receipt (in `_meta` or
    as a separate field)
 3. If yes: verify the receipt with svr-verify
-4. If no: report T9 finding "no verification receipt on output"
+4. If no: report T4/T9 finding "no verification receipt on output"
 
-This maps to the existing T9 coverage model: passive detection
+This maps to the existing T4/T9 coverage model: passive detection
 (does the server produce receipts?) plus middleware enforcement
 (does the pipeline reject unchained output?).
 
@@ -190,7 +205,7 @@ the receipt_id as a cross-reference:
 | CoSAI Category | How SVR contributes |
 |---|---|
 | T6 (Integrity/Verification) | Receipt is a signed integrity artifact |
-| T9 (Trust Boundary) | Gate enforces "verify before chain" at the trust boundary |
+| T9 (Trust Boundary) | Gate enforces "verify before chain" at the trust boundary. This is the deterministic verification gate absent in the PocketOS compound failure (T2+T9+T12; see THREAT_CATALOG.md "Compound Threat Patterns"). |
 | T12 (Logging/Auditability) | Receipt is independently verifiable audit evidence |
 
 ## Claim boundaries
@@ -203,16 +218,47 @@ They do not replace:
 - T3 (Input Validation): SVR does not sanitize inputs
 - T4 (Data/Control Boundary): SVR does not detect prompt injection
 - T5 (Data Protection): SVR does not encrypt data in transit
-- Existing T9 sanitization: SVR does not strip control characters
+- ResponseBoundaryGuard injection scanning: SVR does not replace
+  the existing regex-based injection detection in check_response()
 
-SVR is additive. It fills the gap between "output looks safe
-character-by-character" (existing T9) and "output is structurally
-consistent claim-by-claim" (SVR).
+SVR is additive. It fills the gap between "output has no injection
+patterns" (existing T4/T9 via ResponseBoundaryGuard) and "output is
+structurally consistent claim-by-claim" (SVR).
+
+## Shared Ed25519 key infrastructure
+
+cosai-mcp uses Ed25519 for three signing operations:
+
+- Catalog signing (`cosai_mcp/signing.py`): signs threat definition JSON files
+- Scorecard signing (`cosai_mcp/scorecard/signing.py`): signs scan result scorecards
+- Inventory signing (`cosai_mcp/inventory/signing.py`): signs tool inventory snapshots
+
+All three use the same key management pattern:
+
+- Deterministic seed derivation from a 32-byte seed
+- Per-installation keyring storage via the `keyring` package
+- Environment variable override for fleet/CI deployment
+  (`COSAI_SIGNING_SEED`, `COSAI_SIGNING_KEY_FILE`)
+
+SVR receipts use the same Ed25519 primitive (`pynacl` / `cryptography`
+library). An SVR-producing MCP server can reuse the existing
+cosai-mcp key infrastructure:
+
+```
+# Same seed signs catalog, scorecards, inventories, AND SVR receipts
+export COSAI_SIGNING_SEED="<base64-encoded-32-byte-seed>"
+```
+
+This means zero additional key management for anyone already
+running cosai-mcp. No new secrets to distribute. No new key
+rotation procedures. The consuming side (`svr-verify`) accepts
+any Ed25519 public key, so it works with cosai-mcp's existing
+key distribution.
 
 ## Files
 
 - Integration code: `examples/cosai_svr_gate.py`
-- SVR spec: `SVR_SPEC_v1.txt`
+- Receipt format and proof shape: `README.md` ("Proof receipt shape")
 - Receipt verifier: `pip install svr-verify` (MIT)
 - Sample receipt: `docs/SVR_RECEIPT_EXAMPLE.json`
 - Verification quickstart: `docs/SVR_VERIFY_QUICKSTART.md`

@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0",
+  "id": "T09-002",
+  "category": "T9",
+  "severity": "info",
+  "cosai_ref": "T9",
+  "owasp_ref": "MCP-Top10-A09",
+  "cwe": [
+    "CWE-345",
+    "CWE-807"
+  ],
+  "probes": [
+    {
+      "id": "T09-002-p1",
+      "transport": "http",
+      "method": "tools/list",
+      "payload": {},
+      "assertions": [
+        {
+          "target": "response.error",
+          "operator": "eq",
+          "value": false,
+          "description": "Server must respond to tools/list"
+        }
+      ]
+    },
+    {
+      "id": "T09-002-p2",
+      "transport": "http",
+      "method": "tools/list",
+      "payload": {},
+      "assertions": [
+        {
+          "target": "response.body",
+          "operator": "matches_regex",
+          "value": "(?i)(svr|verification.receipt|structural.verif|verify_claims|verify_graph|sigma.guard)",
+          "description": "At least one tool description should reference structural verification or SVR receipts. FAIL means the server does not advertise output verification. INFO severity: absence is not a vulnerability but indicates no deterministic verification gate is present at the T9 trust boundary."
+        }
+      ]
+    }
+  ],
+  "remediation": "MCP servers producing claims or assertions should attach a Structural Verification Receipt (SVR) to tool outputs. The receipt provides cryptographic evidence that output was verified for structural consistency before downstream chaining. See: pip install svr-verify (MIT, consume side) or pip install sigma-guard (BSL-1.1, produce side).",
+  "references": [
+    "https://cosai.org/T9",
+    "https://github.com/Jasonleonardvolk/sigma-guard",
+    "https://cwe.mitre.org/data/definitions/345.html"
+  ]
+}

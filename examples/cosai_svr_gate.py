@@ -1,16 +1,25 @@
-"""SVR trust gate for cosai-mcp T9 trust boundary enforcement.
+"""SVR trust gate for cosai-mcp T4/T9 trust boundary enforcement.
 
 This module demonstrates how SVR (Structural Verification Receipt)
 verification integrates into the cosai-mcp middleware stack as a
-T9 trust boundary check.
+trust boundary check at the T4/T9 layer.
 
-The existing T9 path (trust.py) catches character-level threats:
-control characters, null bytes, injection patterns. This module
-adds claim-level verification: are the assertions in the output
-structurally consistent?
+The existing check_response() path runs ResponseBoundaryGuard
+(cosai_mcp/middleware/boundary.py), which scans tool output for
+regex-based injection patterns: prompt overrides, system tokens,
+exfiltration markers. It flags injection attempts but does not
+sanitize content or strip control characters.
+
+(cosai-mcp also provides trust.py with LLMOutputSanitizer for
+character-level sanitization -- control chars, null bytes, dangerous
+Unicode -- but that class is not wired into CoSAIStack.check_response().
+It is a separate utility for callers who need content sanitization.)
+
+This module adds claim-level verification: are the assertions in
+the output structurally consistent?
 
 Integration point: CoSAIStack.check_response()
-  Current: ResponseBoundaryGuard (injection pattern scan)
+  Current: ResponseBoundaryGuard (regex injection pattern scan)
   Added:   SVRTrustGate (structural consistency + signed receipt)
 
 The verification flow:
@@ -77,7 +86,7 @@ class SVRGateResult:
 
 
 class SVRTrustGate:
-    """T9 trust boundary enforcement via SVR receipt verification.
+    """T4/T9 trust boundary enforcement via SVR receipt verification.
 
     Sits in the check_response() path of CoSAIStack. Verifies that
     a valid SVR receipt accompanies tool output before allowing
@@ -293,7 +302,7 @@ def integrate_with_cosai_stack(stack: Any, pubkey_hex: str | None = None) -> Non
 # -----------------------------------------------------------------
 
 def conformance_test_receipt_before_chain() -> dict[str, Any]:
-    """Run the T9 SVR conformance test.
+    """Run the T4/T9 SVR conformance test.
 
     This is the falsifiable test Rags asked for:
     "receipt validates before chain continues"
@@ -303,7 +312,7 @@ def conformance_test_receipt_before_chain() -> dict[str, Any]:
     2. A tampered receipt fails the gate (chain blocked)
     3. A receipt with wrong input_hash fails (chain blocked)
     4. A receipt with safe_to_rely=False fails (chain blocked)
-    5. A missing receipt fails when gate requires one
+    5. An empty receipt (no fields) fails the gate (chain blocked)
 
     Returns a dict with test names and pass/fail results.
     """
@@ -337,11 +346,16 @@ def conformance_test_receipt_before_chain() -> dict[str, Any]:
     unsafe = dict(valid_receipt, safe_to_rely=False, verdict="inconsistencies_detected")
     r4 = gate.verify_before_chain(unsafe, tool_output=tool_output)
 
+    # Test 5: empty receipt (no fields at all) fails
+    empty = {}
+    r5 = gate.verify_before_chain(empty, tool_output=tool_output)
+
     results = {
         "valid_receipt_passes": r1.safe is True,
         "tampered_receipt_blocked": r2.safe is False,
         "wrong_hash_blocked": r3.safe is False,
         "unsafe_verdict_blocked": r4.safe is False,
+        "empty_receipt_blocked": r5.safe is False,
     }
 
     all_pass = all(results.values())

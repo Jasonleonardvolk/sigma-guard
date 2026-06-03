@@ -1,0 +1,44 @@
+TO: cosai-agentic-systems-ws mailing list
+FROM: jason@invariant.pro
+SUBJECT: Re: Implementation note: SVR receipt verification at the T4/T9 trust boundary
+
+----------------------------------------------------------------------
+
+Rags,
+
+I looked at cosai-mcp this afternoon. The integration point is
+clear: CoSAIStack.check_response() is the T4/T9 trust boundary
+where SVR verification slots in.
+
+I wrote two things:
+
+1. Implementation note showing exactly where in the call path
+   receipt verification happens, what the produce and consume
+   sides look like, and how SVR maps to T6/T9/T12:
+   https://github.com/Jasonleonardvolk/sigma-guard/blob/main/docs/COSAI_T9_INTEGRATION.md
+
+2. Working integration code with the falsifiable conformance test
+   you asked for ("receipt validates before chain continues"):
+   https://github.com/Jasonleonardvolk/sigma-guard/blob/main/examples/cosai_svr_gate.py
+
+The short version: SVRTrustGate sits after ResponseBoundaryGuard
+in check_response(). Existing T4/T9 catches injection patterns via
+regex. SVR adds structural consistency verification. The gate
+checks structure, signature, input hash match, and verdict before
+allowing chain continuation. Five conformance assertions, all
+passing, zero dependencies on the engine.
+
+The consume side uses only svr-verify (MIT, single dep). No
+license conflict with cosai-mcp's Apache 2.0.
+
+I also noticed the resources/read audit gap in THREAT_CATALOG.md
+and wrote a check_resource_read() contribution that closes it. Same
+AuditLogger pattern, with DAG parent_id so resource reads link back
+to their triggering tool call. That and a couple of T09 catalog probe
+definitions are in contrib/cosai-mcp/ if you want to look at them.
+
+Happy to walk through this at a Thursday workstream meeting if
+useful, or to shape it into whatever format WS4 prefers.
+
+Jason
+sigma-guard / SVR

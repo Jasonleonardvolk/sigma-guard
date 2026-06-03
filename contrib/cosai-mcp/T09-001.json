@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0",
+  "id": "T09-001",
+  "category": "T9",
+  "severity": "high",
+  "cosai_ref": "T9",
+  "owasp_ref": "MCP-Top10-A09",
+  "cwe": [
+    "CWE-602",
+    "CWE-807"
+  ],
+  "probes": [
+    {
+      "id": "T09-001-p1",
+      "transport": "http",
+      "method": "tools/list",
+      "payload": {},
+      "assertions": [
+        {
+          "target": "response.error",
+          "operator": "eq",
+          "value": false,
+          "description": "Server must respond to tools/list for Totem analysis"
+        }
+      ]
+    },
+    {
+      "id": "T09-001-p2",
+      "transport": "http",
+      "method": "tools/list",
+      "payload": {},
+      "assertions": [
+        {
+          "target": "response.body",
+          "operator": "matches_regex",
+          "value": "(?i)(confirm|dry.?run|preview|plan|two.?stage|requires?.+confirmation)",
+          "description": "At least one tool must disclose a confirmation or dry-run parameter. FAIL means destructive tools may execute without a two-stage commit gate. See THREAT_CATALOG.md T9 Totem. Manual review required: FAIL is also expected when the server has no destructive tools."
+        }
+      ]
+    }
+  ],
+  "remediation": "Implement two-stage commit for all destructive tools: a plan/preview call returns a description and a short-lived confirmation token; an execute call requires the token. No probabilistic component should hold commit authority over irreversible state without explicit human confirmation.",
+  "references": [
+    "https://cosai.org/T9",
+    "https://cwe.mitre.org/data/definitions/602.html",
+    "https://cwe.mitre.org/data/definitions/807.html"
+  ]
+}
