@@ -12,7 +12,7 @@
 from sigma_guard.engine import SigmaGuard
 from sigma_guard.verdict import Verdict, Contradiction, WriteCheckResult
 
-__version__ = "0.1.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "SigmaGuard",
