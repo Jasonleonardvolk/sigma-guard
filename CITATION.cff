@@ -1,0 +1,41 @@
+cff-version: 1.2.0
+message: "If you use SIGMA Guard, please cite it as below."
+title: "SIGMA Guard: Deterministic Structural Contradiction Detection for Graph Databases"
+type: software
+authors:
+  - family-names: Volk
+    given-names: Jason Leonard
+    email: jason@invariant.pro
+    affiliation: Invariant Research
+version: 0.3.1
+date-released: 2026-06-07
+url: "https://github.com/Jasonleonardvolk/sigma-guard"
+repository-code: "https://github.com/Jasonleonardvolk/sigma-guard"
+license: BSL-1.1
+keywords:
+  - sheaf-cohomology
+  - graph-database
+  - contradiction-detection
+  - verification
+  - knowledge-graph
+  - deterministic
+  - mcp
+abstract: >-
+  SIGMA Guard detects structural contradictions in knowledge graphs,
+  agent state, and LLM output using cellular sheaf cohomology. It
+  identifies global inconsistencies that schema validation and
+  constraint engines miss, returning deterministic proof receipts
+  with exact contradiction locations and severity rankings. The
+  full SIGMA engine achieves 35 microsecond median per-edit latency
+  at 5 million vertices with zero drift and zero ML dependency.
+references:
+  - type: article
+    authors:
+      - family-names: Volk
+        given-names: Jason Leonard
+    title: "Incremental Sheaf Cohomology on Cellular Complexes"
+    year: 2026
+    identifiers:
+      - type: other
+        value: "arXiv:2606.04227"
+        description: "arXiv preprint"

@@ -1,5 +1,10 @@
 # SIGMA Guard
 
+[![PyPI version](https://img.shields.io/pypi/v/sigma-guard)](https://pypi.org/project/sigma-guard/)
+[![Python versions](https://img.shields.io/pypi/pyversions/sigma-guard)](https://pypi.org/project/sigma-guard/)
+[![License](https://img.shields.io/badge/license-BSL--1.1-blue)](https://github.com/Jasonleonardvolk/sigma-guard/blob/main/LICENSE)
+[![arXiv](https://img.shields.io/badge/arXiv-2606.04227-b31b1b)](https://arxiv.org/abs/2606.04227)
+
 **Structural verification for graph databases.**
 
 Your graph can pass every schema check and still contradict itself.

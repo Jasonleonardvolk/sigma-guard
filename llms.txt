@@ -23,7 +23,7 @@ Run: `sigma-guard-mcp` (stdio) or `sigma-guard-mcp --transport streamable-http` 
 ## Integration
 
 - PyPI: https://pypi.org/project/sigma-guard/
-- GitHub: https://github.com/invariant-research/sigma-guard
+- GitHub: https://github.com/Jasonleonardvolk/sigma-guard
 - MCP docs: https://invariant.pro/docs/sigma-guard/mcp
 - FastAPI endpoint: https://invariant.pro/api/verify
 - Verification receipts: https://invariant.pro/receipts

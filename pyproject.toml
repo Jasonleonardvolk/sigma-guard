@@ -28,16 +28,22 @@ keywords = [
     "pre-commit-hook",
     "memgraph",
     "neo4j",
+    "falkordb",
     "deterministic",
     "structural-verification",
+    "graph-consistency",
+    "formal-verification",
+    "ai-safety",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
     "Topic :: Database",
     "Topic :: Scientific/Engineering :: Mathematics",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Security",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
@@ -68,6 +74,7 @@ Homepage = "https://invariant.pro"
 Repository = "https://github.com/Jasonleonardvolk/sigma-guard"
 Documentation = "https://invariant.pro/docs/sigma-guard"
 Issues = "https://github.com/Jasonleonardvolk/sigma-guard/issues"
+Changelog = "https://github.com/Jasonleonardvolk/sigma-guard/blob/main/CHANGELOG.md"
 MCP = "https://invariant.pro/docs/sigma-guard/mcp"
 
 [tool.setuptools.packages.find]
