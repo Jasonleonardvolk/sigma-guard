@@ -1,0 +1,20 @@
+TO: cosai-agentic-systems-ws mailing list (reply to Rags)
+FROM: jason@invariant.pro
+
+----------------------------------------------------------------------
+
+Fair point. T9 is the principle, SVR is one mechanism. No argument
+there.
+
+Worth noting: IANA registered the receipt media type yesterday.
+
+  application/vnd.svr.receipt+json
+  http://www.iana.org/assignments/media-types
+
+The spec reference now lives outside sigma-guard.
+
+I can walk through the stateful scenario anytime. The T6/T9/T12
+compound pattern stands on its own regardless of what backs the
+T9 layer.
+
+Jason

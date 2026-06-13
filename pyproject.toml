@@ -7,7 +7,7 @@ name = "sigma-guard"
 version = "0.3.1"
 description = "Deterministic structural verification for knowledge graphs, agent state, and LLM output using sheaf cohomology. MCP server included."
 readme = "README.md"
-license = {text = "BSL-1.1"}
+license = {text = "BUSL-1.1"}
 requires-python = ">=3.9"
 authors = [
     {name = "Jason Volk", email = "jason@invariant.pro"},

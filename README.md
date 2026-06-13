@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/sigma-guard)](https://pypi.org/project/sigma-guard/)
 [![Python versions](https://img.shields.io/pypi/pyversions/sigma-guard)](https://pypi.org/project/sigma-guard/)
-[![License](https://img.shields.io/badge/license-BSL--1.1-blue)](https://github.com/Jasonleonardvolk/sigma-guard/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-BUSL--1.1-blue)](https://github.com/Jasonleonardvolk/sigma-guard/blob/main/LICENSE)
 [![arXiv](https://img.shields.io/badge/arXiv-2606.04227-b31b1b)](https://arxiv.org/abs/2606.04227)
 
 **Structural verification for graph databases.**
@@ -14,7 +14,9 @@ SIGMA Guard catches that before the write commits.
 
 > Note: This project is unrelated to SigmaHQ detection rules.
 > SIGMA Guard is a graph consistency verification layer from
-> [Invariant Research](https://invariant.pro).
+> [Invariant Research](https://invariant.pro). It operates on reasoning and
+> policy graphs and is separate from the SATYA Protein structure verifier,
+> which uses a different constant-sheaf baseline.
 
 ## Quickstart
 
@@ -127,7 +129,7 @@ independent detection mechanisms:
 from sigma_guard.engine import SigmaGuard, RelationConstraint
 
 guard = SigmaGuard(constraints={
-    # Sheaf cohomology (H^1): detects cycles
+    # H^1-backed obstruction checks over reasoning/policy graphs
     "SUPPLIES": {"acyclic": True},
     "DEPENDS_ON": {"acyclic": True},
     "REPORTS_TO": {"acyclic": True},
@@ -534,7 +536,7 @@ you need: `pip install sigma-guard[neo4j]`.
 
 ## License
 
-Business Source License 1.1 (BSL-1.1).
+Business Source License 1.1 (SPDX: BUSL-1.1).
 
 Free local tier: up to 10,000 vertices / 100,000 edges.
 
@@ -546,6 +548,17 @@ Free local tier: up to 10,000 vertices / 100,000 edges.
 | Enterprise | Custom | Custom |
 
 The standalone verifier is released under Apache 2.0.
+
+## Related projects
+
+SIGMA Guard is part of the Invariant Research verification stack:
+
+- [svr-verify](https://github.com/Jasonleonardvolk/svr-verify): the standalone Signed Verification Receipt (SVR) verifier. SIGMA Guard proof receipts serialize to the SVR format, and svr-verify checks the Ed25519 signature and structure with no engine dependency. On PyPI as `svr-verify`.
+- [SATYA SVR Verifier](https://huggingface.co/spaces/jasonlvolk/satya-svr-verifier): a hosted verifier on Hugging Face, also exposed as an MCP tool so an agent can validate a receipt at a trust boundary.
+- [SVR receipt fixtures](https://huggingface.co/datasets/jasonlvolk/svr-receipts-examples): a conformance dataset of signed receipts and failure cases.
+- [SIGMA Enron demo](https://huggingface.co/spaces/jasonlvolk/sigma-enron-demo): the scaling demo on a real power-law graph.
+- [arXiv:2606.04227](https://arxiv.org/abs/2606.04227): the incremental sheaf cohomology paper behind the engine.
+- Smithery: published to the Smithery MCP registry as `sigma-guard` (install with `pip install sigma-guard[mcp]`).
 
 ## Citation
 

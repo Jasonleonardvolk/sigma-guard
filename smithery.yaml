@@ -61,7 +61,7 @@ cursor:
 author: Jason Volk
 homepage: https://invariant.pro
 repository: https://github.com/Jasonleonardvolk/sigma-guard
-license: BSL-1.1
+license: BUSL-1.1
 
 keywords:
   - mcp

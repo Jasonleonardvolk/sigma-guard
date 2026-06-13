@@ -1,0 +1,24 @@
+TO: Rags Srinivasan (cosai-agentic-systems-ws or direct)
+FROM: jason@invariant.pro
+SUBJECT: SVR receipt format now IANA-registered
+
+----------------------------------------------------------------------
+
+Rags,
+
+Quick update: IANA registered the SVR receipt media type today.
+
+  application/vnd.svr.receipt+json
+
+Registration link: [IANA link when available]
+Published specification: SVR Specification v1.0
+https://github.com/Jasonleonardvolk/sigma/blob/main/satya/spec/SVR_SPEC_v1.txt
+
+This gives the receipt format a spec anchor independent of
+sigma-guard. Thought you would want to know given our earlier
+conversation.
+
+Still interested in the stateful scenario discussion whenever
+it fits the WS4 agenda.
+
+Jason

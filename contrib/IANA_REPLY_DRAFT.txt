@@ -1,0 +1,22 @@
+TO: Amanda Baber, IANA
+FROM: jason@invariant.pro
+SUBJECT: Re: IANA media type registration
+
+----------------------------------------------------------------------
+
+Hi Amanda,
+
+Both changes are correct:
+
+1. Yes, the first "vnd." in "vnd.vnd.svr.receipt+json" should be
+   deleted. The intended media type is application/vnd.svr.receipt+json.
+
+2. Yes, ending the interoperability considerations section at
+   "the SVR Specification v1.0." and removing the redundant spec
+   link is fine.
+
+Thank you for catching these.
+
+Jason Volk
+Invariant Research
+jason@invariant.pro

@@ -11,7 +11,7 @@ version: 0.3.1
 date-released: 2026-06-07
 url: "https://github.com/Jasonleonardvolk/sigma-guard"
 repository-code: "https://github.com/Jasonleonardvolk/sigma-guard"
-license: BSL-1.1
+license: BUSL-1.1
 keywords:
   - sheaf-cohomology
   - graph-database

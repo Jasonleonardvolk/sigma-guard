@@ -192,6 +192,7 @@ class SigmaGuard:
         self._edge_data = []
         self._edge_relations = []
         self._vertex_key_labels = {}  # vid_key (original ID) -> display label
+        self._vertex_key_claims = {}  # vid_key (original ID) -> claims dict
         self._use_standalone = False
         self._parsed_data = None
 
@@ -284,6 +285,7 @@ class SigmaGuard:
         # Add vertices
         vertex_ids = {}
         self._vertex_key_labels = {}  # reset on reload
+        self._vertex_key_claims = {}
         for v in vertices:
             vid_key = v.get("id", v.get("label", ""))
             label = v.get("label", vid_key)
@@ -292,6 +294,7 @@ class SigmaGuard:
             self._vertex_map[label] = vid
             self._vertex_labels[vid] = label
             self._vertex_key_labels[vid_key] = label
+            self._vertex_key_claims[vid_key] = v.get("claims", {})
 
         # Add edges
         edges = data.get("edges", [])
@@ -497,116 +500,130 @@ class SigmaGuard:
         cert = self._cohomology.obstruction_certificate(section)
         total_energy = cert["total_energy"]
 
-        # Localize contradictions to edges and filter.
-        # KEY RULE 1: if H^1 = 0, the graph has no structural
-        # contradictions regardless of energy values.
-        # KEY RULE 2: if no constraints are declared, don't report
-        # any structural contradictions. The user explicitly said
-        # "no rules." H^1 is still in the certificate for transparency.
+        # H^1 is computed for the certificate but NOT used for finding
+        # localization. All constraint detection uses direct graph checks
+        # on the raw directed edge data, which is more precise than
+        # energy localization (which spreads across all edges of a type).
         contradictions = []
-        has_any_acyclic = any(
-            c.acyclic for c in self._constraints.values()
-        )
-        if has_any_acyclic and h1_dim > 0 and total_energy > 1e-8:
-            localized = self._cohomology.localize_obstruction(
-                section, top_k=50
-            )
-
-            energy_floor = total_energy * ENERGY_REPORT_FLOOR
-
-            for loc in localized:
-                energy = loc["energy"]
-                fraction = loc["fraction"]
-                endpoints = loc.get("endpoints", (None, None))
-                u_vid = endpoints[0]
-                v_vid = endpoints[1]
-                e_idx = loc.get("edge", 0)
-
-                # Get relation type for this edge
-                relation = ""
-                if e_idx < len(self._edge_relations):
-                    relation = self._edge_relations[e_idx]
-
-                # ONLY report edges whose relation is declared acyclic.
-                # H^1 energy spreads across all edges in a cyclic graph;
-                # only the acyclic-declared ones represent real violations.
-                constraint = self.get_constraint(relation)
-                if not constraint.acyclic:
-                    continue
-
-                if energy < energy_floor:
-                    continue
-
-                severity = _classify_severity(fraction)
-                labels = loc.get("vertex_labels", ("?", "?"))
-
-                proof_data = json.dumps({
-                    "edge": e_idx,
-                    "endpoints": list(endpoints),
-                    "energy": energy,
-                    "h1_dim": h1_dim,
-                }).encode("utf-8")
-                proof_id = generate_proof_id(proof_data)
-
-                explanation = self._generate_explanation(
-                    loc, relation, []
-                )
-
-                contradictions.append(Contradiction(
-                    severity=severity,
-                    location=(labels[0] or "?", labels[1] or "?"),
-                    edge_index=e_idx,
-                    energy=energy,
-                    energy_fraction=fraction,
-                    explanation=explanation,
-                    proof_id=proof_id,
-                ))
 
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
-        # INDEPENDENT CONSTRAINT CHECK: agree_on violations.
-        # H^1 detects cycle-based structural contradictions.
-        # agree_on, functional, and symmetric constraints are checked
-        # as direct graph inspections because they are simpler than
-        # what sheaf cohomology is designed for.
-        for e_idx, (u, v) in enumerate(self._graph.edges):
-            relation = ""
-            if e_idx < len(self._edge_relations):
-                relation = self._edge_relations[e_idx]
+        # ALL CONSTRAINT CHECKS use raw edge_data to preserve
+        # directionality from the source database.
+        if self._edge_data:
+            from collections import defaultdict
 
-            constraint = self.get_constraint(relation)
+            # --- acyclic: DFS cycle detection ---
+            # Finds the actual edges that participate in cycles,
+            # not all edges of the relation type (no energy spreading).
+            for rel_type, constraint in self._constraints.items():
+                if not constraint.acyclic:
+                    continue
+                # Build directed adjacency for this relation
+                adj = {}       # src_key -> set of tgt_keys
+                all_nodes = set()
+                for src_key, tgt_key, relation, value in self._edge_data:
+                    if relation.upper().replace(" ", "_") == rel_type or relation == rel_type:
+                        adj.setdefault(src_key, set()).add(tgt_key)
+                        all_nodes.add(src_key)
+                        all_nodes.add(tgt_key)
 
-            # --- agree_on: property values must match ---
-            if constraint.agree_on:
-                has_disagreement, disagreeing_keys = (
-                    self._has_semantic_disagreement(u, v, relation)
-                )
-                if has_disagreement:
-                    already_reported = any(
-                        c.edge_index == e_idx for c in contradictions
-                    )
-                    if not already_reported:
-                        u_label = self._vertex_labels.get(u, "?")
-                        v_label = self._vertex_labels.get(v, "?")
-                        proof_data = json.dumps({
-                            "edge": e_idx,
-                            "agree_on_violation": disagreeing_keys,
-                        }).encode("utf-8")
-                        proof_id = generate_proof_id(proof_data)
-                        contradictions.append(Contradiction(
-                            severity="HIGH",
-                            location=(u_label, v_label),
-                            edge_index=e_idx,
-                            energy=0.0,
-                            energy_fraction=0.0,
-                            explanation=(
-                                "Constraint violation between '%s' and '%s' (%s): "
-                                "disagreement on %s."
-                                % (u_label, v_label, relation or "related",
-                                   ", ".join(disagreeing_keys))
-                            ),
-                            proof_id=proof_id,
-                        ))
+                if not adj:
+                    continue
+
+                # DFS cycle detection: find all edges in cycles
+                WHITE, GRAY, BLACK = 0, 1, 2
+                color = {n: WHITE for n in all_nodes}
+                cycle_edges = set()
+                path = []
+
+                def dfs(node):
+                    color[node] = GRAY
+                    path.append(node)
+                    for neighbor in adj.get(node, set()):
+                        if color.get(neighbor) == GRAY:
+                            # Found cycle: extract edges from path
+                            try:
+                                ci = path.index(neighbor)
+                            except ValueError:
+                                continue
+                            cycle_path = path[ci:]
+                            for k in range(len(cycle_path)):
+                                s = cycle_path[k]
+                                t = cycle_path[(k + 1) % len(cycle_path)]
+                                cycle_edges.add((s, t))
+                        elif color.get(neighbor) == WHITE:
+                            dfs(neighbor)
+                    path.pop()
+                    color[node] = BLACK
+
+                for node in all_nodes:
+                    if color.get(node) == WHITE:
+                        dfs(node)
+
+                # Report each cycle edge
+                for src_key, tgt_key in cycle_edges:
+                    src_label = self._vertex_key_labels.get(src_key, src_key)
+                    tgt_label = self._vertex_key_labels.get(tgt_key, tgt_key)
+                    proof_data = json.dumps({
+                        "cycle_edge": [src_label, tgt_label],
+                        "relation": rel_type,
+                    }).encode("utf-8")
+                    proof_id = generate_proof_id(proof_data)
+                    contradictions.append(Contradiction(
+                        severity="CRITICAL",
+                        location=(src_label, tgt_label),
+                        edge_index=-1,
+                        energy=0.0,
+                        energy_fraction=0.0,
+                        explanation=(
+                            "Circular dependency: '%s' %s '%s', "
+                            "which is part of a cycle in a relationship "
+                            "declared acyclic."
+                            % (src_label, rel_type, tgt_label)
+                        ),
+                        proof_id=proof_id,
+                    ))
+
+            # --- agree_on: property values must match across edge ---
+            for src_key, tgt_key, relation, value in self._edge_data:
+                constraint = self.get_constraint(relation)
+                if not constraint.agree_on:
+                    continue
+                src_claims = self._vertex_key_claims.get(src_key, {})
+                tgt_claims = self._vertex_key_claims.get(tgt_key, {})
+                if not isinstance(src_claims, dict) or not isinstance(tgt_claims, dict):
+                    continue
+                disagreeing_keys = []
+                for key in sorted(constraint.agree_on):
+                    u_val = src_claims.get(key)
+                    v_val = tgt_claims.get(key)
+                    if u_val is not None and v_val is not None and u_val != v_val:
+                        disagreeing_keys.append(key)
+                if disagreeing_keys:
+                    src_label = self._vertex_key_labels.get(src_key, src_key)
+                    tgt_label = self._vertex_key_labels.get(tgt_key, tgt_key)
+                    proof_data = json.dumps({
+                        "agree_on_violation": disagreeing_keys,
+                        "source": src_label,
+                        "target": tgt_label,
+                        "relation": relation,
+                    }).encode("utf-8")
+                    proof_id = generate_proof_id(proof_data)
+                    contradictions.append(Contradiction(
+                        severity="HIGH",
+                        location=(src_label, tgt_label),
+                        edge_index=-1,
+                        energy=0.0,
+                        energy_fraction=0.0,
+                        explanation=(
+                            "Constraint violation between '%s' and '%s' (%s): "
+                            "disagreement on %s."
+                            % (src_label, tgt_label, relation or "related",
+                               ", ".join(disagreeing_keys))
+                        ),
+                        proof_id=proof_id,
+                    ))
 
         # --- cardinality: min/max outgoing edges of this type ---
         # Generalizes the old functional check. functional=True is
