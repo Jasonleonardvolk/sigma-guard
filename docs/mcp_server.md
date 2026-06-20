@@ -50,7 +50,7 @@ optional `relation`).
 
 **Output:** Deterministic verdict (CONSISTENT or INCONSISTENT), exact
 contradiction locations with severity rankings, Dirichlet energy per
-edge, and a cryptographic proof ID.
+edge, and a content-addressed proof ID.
 
 ### verify_claims
 
@@ -66,7 +66,7 @@ state across multiple tool calls.
 (attribute), and `value` (what is asserted).
 
 **Output:** Verdict (SAFE or UNSAFE), contradiction details, and a
-signed proof receipt. If UNSAFE, includes a recommendation to revise,
+deterministic proof receipt. If UNSAFE, includes a recommendation to revise,
 flag for human review, or block emission.
 
 ### check_write
@@ -296,7 +296,7 @@ SIGMA Guard MCP Server (stdio or Streamable HTTP)
 Sheaf cohomology verification (deterministic, zero ML)
         |
         v
-Verdict + cryptographic proof receipt returned to agent
+Verdict + deterministic proof receipt returned to agent
         |
         v
 Agent decides: emit, revise, block, or flag for human review

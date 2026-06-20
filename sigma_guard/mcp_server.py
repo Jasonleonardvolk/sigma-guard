@@ -49,7 +49,7 @@ def create_server():
             "output before emitting it. Call verify_graph to audit a full "
             "knowledge graph. Call check_write to gate a proposed mutation. "
             "Every verdict is deterministic, reproducible, and returns a "
-            "cryptographically signed proof receipt. Zero ML. Zero GPU. "
+            "content-addressed proof receipt. Zero ML. Zero GPU. "
             "35 microseconds per edit at 5 million vertices."
         ),
     )
@@ -67,7 +67,7 @@ def create_server():
             "that schema validation and constraint engines miss. "
             "Returns a deterministic verdict (CONSISTENT or INCONSISTENT), "
             "exact contradiction locations with severity rankings, "
-            "Dirichlet energy per edge, and a cryptographic proof ID. "
+            "Dirichlet energy per edge, and a content-addressed proof ID. "
             "Use BEFORE trusting retrieved graph data, after GraphRAG "
             "retrieval, after knowledge graph ETL merges, or when "
             "auditing agent memory for accumulated contradictions. "
@@ -164,7 +164,7 @@ def create_server():
             "and value (what is asserted). SIGMA builds a verification "
             "graph from the claims and checks whether all claims can be "
             "true simultaneously using sheaf cohomology. "
-            "Returns SAFE or UNSAFE with a signed proof receipt. "
+            "Returns SAFE or UNSAFE with a deterministic proof receipt. "
             "Use BEFORE emitting LLM output to the user, after RAG "
             "retrieval to check retrieved facts agree, or when an agent "
             "accumulates state across multiple tool calls. "
@@ -197,6 +197,8 @@ def create_server():
         if not claims:
             return json.dumps({"error": "No claims provided."})
 
+        from sigma_guard.engine import RelationConstraint
+
         # Group claims by subject to build vertices
         subjects = {}
         for claim in claims:
@@ -209,8 +211,32 @@ def create_server():
 
         vertices = list(subjects.values())
 
-        # Create edges between subjects that share at least one property
+        # Detect same-subject property conflicts directly.
+        # If a subject has two claims about the same property with
+        # different values, that is a direct contradiction regardless
+        # of graph structure.
+        direct_conflicts = []
+        claim_groups = {}
+        for claim in claims:
+            subj = claim.get("subject", "unknown")
+            prop = claim.get("property", "unknown")
+            val = claim.get("value", "")
+            key = (subj, prop)
+            if key not in claim_groups:
+                claim_groups[key] = val
+            elif claim_groups[key] != val:
+                direct_conflicts.append({
+                    "subject": subj,
+                    "property": prop,
+                    "value_a": claim_groups[key],
+                    "value_b": val,
+                })
+
+        # Create edges between subjects that share at least one
+        # property name, and collect which properties are shared
+        # so we can configure agree_on constraints for them.
         edges = []
+        all_shared_keys = set()
         subj_list = list(subjects.keys())
         for i in range(len(subj_list)):
             for j in range(i + 1, len(subj_list)):
@@ -221,14 +247,29 @@ def create_server():
                     & set(subjects[b]["claims"].keys())
                 )
                 if shared:
+                    all_shared_keys.update(shared)
                     edges.append({
                         "source": a,
                         "target": b,
                         "relation": "shared_claims",
                     })
 
+        # Configure explicit constraints so the sheaf engine
+        # actually detects cross-subject disagreements.
+        # shared_claims edges get agree_on for every property key
+        # that appears in both subjects. same_domain edges are
+        # informational only (no constraint).
+        constraints = {}
+        if all_shared_keys:
+            constraints["shared_claims"] = RelationConstraint(
+                agree_on=all_shared_keys,
+            )
+
         # If no edges from shared properties, connect all subjects
-        # (they may be making claims about the same domain)
+        # (they may be making claims about the same domain).
+        # same_domain edges carry no constraint; cross-subject
+        # contradictions without shared property names are caught
+        # only by direct_conflicts above.
         if not edges and len(subj_list) > 1:
             for i in range(len(subj_list)):
                 for j in range(i + 1, len(subj_list)):
@@ -241,24 +282,44 @@ def create_server():
         graph_data = {"vertices": vertices, "edges": edges}
 
         try:
-            guard = SigmaGuard()
+            guard = SigmaGuard(constraints=constraints)
             guard.load_dict(graph_data)
             verdict = guard.verify()
 
+            has_issues = verdict.has_contradictions or len(direct_conflicts) > 0
+            total_contradictions = verdict.contradiction_count + len(direct_conflicts)
+
             result = {
-                "verdict": "UNSAFE" if verdict.has_contradictions else "SAFE",
-                "safe_to_rely_on": not verdict.has_contradictions,
+                "verdict": "UNSAFE" if has_issues else "SAFE",
+                "safe_to_rely_on": not has_issues,
                 "claims_checked": len(claims),
                 "subjects_found": len(subjects),
                 "edges_tested": len(edges),
-                "contradiction_count": verdict.contradiction_count,
+                "contradiction_count": total_contradictions,
                 "elapsed_ms": round(verdict.elapsed_ms, 3),
                 "receipt_id": verdict.proof_id,
                 "deterministic": True,
             }
 
-            if verdict.has_contradictions:
+            if has_issues:
                 result["contradictions"] = []
+
+                # Report direct same-subject property conflicts
+                for dc in direct_conflicts:
+                    result["contradictions"].append({
+                        "severity": "CRITICAL",
+                        "type": "property_conflict",
+                        "location": [dc["subject"], dc["subject"]],
+                        "explanation": (
+                            "Contradictory claims about '%s': "
+                            "property '%s' is asserted as both '%s' "
+                            "and '%s'."
+                            % (dc["subject"], dc["property"],
+                               dc["value_a"], dc["value_b"])
+                        ),
+                    })
+
+                # Report sheaf-detected contradictions
                 for c in verdict.contradictions:
                     result["contradictions"].append({
                         "severity": c.severity,
@@ -266,6 +327,7 @@ def create_server():
                         "explanation": c.explanation,
                         "proof_id": c.proof_id,
                     })
+
                 result["recommendation"] = (
                     "LLM output contains structural contradictions. "
                     "Revise, flag for human review, or block emission."
@@ -294,8 +356,7 @@ def create_server():
             "graph state. Provide the current graph and the proposed "
             "new edge. Returns whether the write is safe to commit or "
             "would introduce a contradiction, with a deterministic "
-            "proof and sub-millisecond latency (35 microseconds at "
-            "5M vertices). "
+            "proof and sub-millisecond latency. "
             "Use as a write guard in GraphRAG pipelines, agent memory "
             "systems, Memgraph/Neo4j pre-commit hooks, or any workflow "
             "where graph mutations must preserve consistency. "

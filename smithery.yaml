@@ -11,10 +11,10 @@ description: >
   find contradictions that schema validation and constraint engines miss.
   Three tools: verify_graph (audit a knowledge graph), verify_claims
   (check LLM output before emission), check_write (pre-commit gate for
-  graph mutations). Returns Ed25519-signed cryptographic proof receipts
-  (SVR format). Zero ML, zero GPU, 35 microseconds per edit at 5M
-  vertices. Model-agnostic. Supports Neo4j, Memgraph, and FalkorDB
-  graph database adapters.
+  graph mutations). Returns deterministic proof receipts with
+  content-addressed proof IDs. Zero ML, zero GPU, 35 microseconds per
+  edit at 5M vertices. Model-agnostic. Supports Neo4j, Memgraph, and
+  FalkorDB graph database adapters.
 
 category: developer-tools
 
@@ -70,7 +70,7 @@ keywords:
   - contradiction-detection
   - sheaf-cohomology
   - verification
-  - cryptographic-receipts
+  - proof-receipts
   - deterministic
   - agent-safety
 

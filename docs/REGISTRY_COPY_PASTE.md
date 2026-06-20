@@ -14,7 +14,7 @@ agent state, and LLM output. Uses cellular sheaf cohomology (H^1) to
 find contradictions that schema validation and constraint engines miss.
 Three tools: verify_graph (audit a knowledge graph), verify_claims
 (check LLM output before emission), check_write (pre-commit gate for
-graph mutations). Returns cryptographic proof receipts. Zero ML, zero
+graph mutations). Returns deterministic proof receipts. Zero ML, zero
 GPU, 35 microseconds per edit at 5M vertices. Model-agnostic.
 
 # GitHub: https://github.com/Jasonleonardvolk/sigma-guard
@@ -41,7 +41,7 @@ GPU, 35 microseconds per edit at 5M vertices. Model-agnostic.
 ### sigma-guard
 Deterministic structural contradiction detection for knowledge graphs,
 agent state, and LLM output using sheaf cohomology. Verify graphs,
-check LLM claims, gate graph mutations. Cryptographic proof receipts.
+check LLM claims, gate graph mutations. Deterministic proof receipts.
 Zero ML.
 
 - **Install:** `pip install sigma-guard[mcp]`
@@ -62,7 +62,7 @@ Zero ML.
 Deterministic structural contradiction detection for knowledge graphs,
 agent state, and LLM output. Uses sheaf cohomology to catch
 contradictions that schema validation misses. Tools: verify_graph,
-verify_claims, check_write. Cryptographic proof receipts. Zero ML.
+verify_claims, check_write. Deterministic proof receipts. Zero ML.
 35us per edit at 5M vertices.
 
 # GitHub: https://github.com/Jasonleonardvolk/sigma-guard
@@ -76,7 +76,7 @@ verify_claims, check_write. Cryptographic proof receipts. Zero ML.
 # Fork: https://github.com/punkpeye/awesome-mcp-servers
 # Find the appropriate category section and add this line:
 
-- [sigma-guard](https://github.com/Jasonleonardvolk/sigma-guard) - Deterministic structural contradiction detection for knowledge graphs and LLM output using sheaf cohomology. Verify graphs, check claims, gate mutations. Cryptographic proofs. Zero ML.
+- [sigma-guard](https://github.com/Jasonleonardvolk/sigma-guard) - Deterministic structural contradiction detection for knowledge graphs and LLM output using sheaf cohomology. Verify graphs, check claims, gate mutations. Deterministic proofs. Zero ML.
 
 # PR title: Add sigma-guard: deterministic structural verification for graphs and LLM output
 # PR body:
@@ -89,7 +89,7 @@ Tools exposed:
 - verify_claims: verify LLM output claims before emission
 - check_write: pre-commit gate for graph mutations
 
-Uses cellular sheaf cohomology (H^1). Returns cryptographic proof
+Uses cellular sheaf cohomology (H^1). Returns deterministic proof
 receipts. Zero ML, zero GPU. 35 microseconds per edit at 5M vertices.
 Supports stdio and Streamable HTTP transports.
 

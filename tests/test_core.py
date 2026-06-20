@@ -135,7 +135,7 @@ class TestJsonParser:
 
 
 # ------------------------------------------------------------------
-# Engine (requires SIGMA core)
+# Engine (standalone verifier path)
 # ------------------------------------------------------------------
 
 class TestEngine:
@@ -146,24 +146,208 @@ class TestEngine:
         assert guard.stalk_dim == 4
 
     def test_load_dict(self):
-        """Test loading a graph from dict (requires SIGMA core)."""
-        try:
-            from sigma_guard import SigmaGuard
-            guard = SigmaGuard(stalk_dim=4, seed=42)
-            guard.load_dict({
-                "vertices": [
-                    {"id": "a", "label": "A", "claims": {"x": True}},
-                    {"id": "b", "label": "B", "claims": {"x": False}},
-                ],
-                "edges": [
-                    {"source": "a", "target": "b", "relation": "contradicts"},
-                ],
-            })
-            verdict = guard.verify()
-            assert isinstance(verdict.h1_dimension, int)
-            assert isinstance(verdict.elapsed_ms, float)
-        except ImportError:
-            pytest.skip("SIGMA core not installed")
+        """Test loading a graph from dict and verifying."""
+        from sigma_guard import SigmaGuard
+        guard = SigmaGuard(stalk_dim=4, seed=42)
+        guard.load_dict({
+            "vertices": [
+                {"id": "a", "label": "A", "claims": {"x": "yes"}},
+                {"id": "b", "label": "B", "claims": {"x": "no"}},
+            ],
+            "edges": [
+                {"source": "a", "target": "b", "relation": "linked"},
+            ],
+        })
+        verdict = guard.verify()
+        assert isinstance(verdict.h1_dimension, int)
+        assert isinstance(verdict.elapsed_ms, float)
+
+    def test_no_constraints_no_contradictions(self):
+        """Unconstrained relations produce zero contradictions."""
+        from sigma_guard import SigmaGuard
+        guard = SigmaGuard(constraints={})
+        guard.load_dict({
+            "vertices": [
+                {"id": "A", "label": "A", "claims": {"x": "1"}},
+                {"id": "B", "label": "B", "claims": {"x": "2"}},
+            ],
+            "edges": [
+                {"source": "A", "target": "B", "relation": "linked"},
+            ],
+        })
+        verdict = guard.verify()
+        assert not verdict.has_contradictions
+
+    def test_acyclic_cycle_detected(self):
+        """Cycles in acyclic relations are detected."""
+        from sigma_guard import SigmaGuard
+        guard = SigmaGuard(constraints={
+            "SUPPLIES": {"acyclic": True},
+        })
+        guard.load_dict({
+            "vertices": [
+                {"id": "A", "label": "A"},
+                {"id": "B", "label": "B"},
+                {"id": "C", "label": "C"},
+            ],
+            "edges": [
+                {"source": "A", "target": "B", "relation": "SUPPLIES"},
+                {"source": "B", "target": "C", "relation": "SUPPLIES"},
+                {"source": "C", "target": "A", "relation": "SUPPLIES"},
+            ],
+        })
+        verdict = guard.verify()
+        assert verdict.has_contradictions
+        assert verdict.contradiction_count >= 1
+        assert any(c.severity == "CRITICAL" for c in verdict.contradictions)
+
+    def test_symmetric_violation_detected(self):
+        """Missing reciprocal edges in symmetric relations are detected."""
+        from sigma_guard import SigmaGuard
+        guard = SigmaGuard(constraints={
+            "BORDERS": {"symmetric": True},
+        })
+        guard.load_dict({
+            "vertices": [
+                {"id": "X", "label": "X"},
+                {"id": "Y", "label": "Y"},
+            ],
+            "edges": [
+                {"source": "X", "target": "Y", "relation": "BORDERS"},
+                # Missing Y -> X
+            ],
+        })
+        verdict = guard.verify()
+        assert verdict.has_contradictions
+        assert any("Symmetry" in c.explanation for c in verdict.contradictions)
+
+    def test_functional_violation_detected(self):
+        """Multiple targets for functional relations are detected."""
+        from sigma_guard import SigmaGuard
+        guard = SigmaGuard(constraints={
+            "HAS_CAPITAL": {"functional": True},
+        })
+        guard.load_dict({
+            "vertices": [
+                {"id": "SA", "label": "South_Africa"},
+                {"id": "P", "label": "Pretoria"},
+                {"id": "CT", "label": "Cape_Town"},
+            ],
+            "edges": [
+                {"source": "SA", "target": "P", "relation": "HAS_CAPITAL"},
+                {"source": "SA", "target": "CT", "relation": "HAS_CAPITAL"},
+            ],
+        })
+        verdict = guard.verify()
+        assert verdict.has_contradictions
+        assert any("Functional" in c.explanation or "unique" in c.explanation
+                    for c in verdict.contradictions)
+
+    def test_agree_on_violation_detected(self):
+        """Property disagreements on agree_on edges are detected."""
+        from sigma_guard import SigmaGuard
+        from sigma_guard.engine import RelationConstraint
+        guard = SigmaGuard(constraints={
+            "governs": RelationConstraint(agree_on={"vendor"}),
+        })
+        guard.load_dict({
+            "vertices": [
+                {"id": "Policy", "label": "Policy", "claims": {"vendor": "A"}},
+                {"id": "Procurement", "label": "Procurement", "claims": {"vendor": "B"}},
+            ],
+            "edges": [
+                {"source": "Policy", "target": "Procurement", "relation": "governs"},
+            ],
+        })
+        verdict = guard.verify()
+        assert verdict.has_contradictions
+        assert verdict.contradiction_count >= 1
+
+
+# ------------------------------------------------------------------
+# check_write parity tests
+#
+# These verify that check_write() uses the SAME validators
+# as verify(). If verify() catches a cycle/symmetry/cardinality
+# violation, check_write() must catch the same write.
+# ------------------------------------------------------------------
+
+class TestCheckWriteParity:
+    def test_check_write_acyclic_blocked(self):
+        """check_write blocks a write that would create a cycle."""
+        from sigma_guard import SigmaGuard
+        guard = SigmaGuard(constraints={
+            "SUPPLIES": {"acyclic": True},
+        })
+        guard.load_dict({
+            "vertices": [
+                {"id": "A", "label": "A"},
+                {"id": "B", "label": "B"},
+                {"id": "C", "label": "C"},
+            ],
+            "edges": [
+                {"source": "A", "target": "B", "relation": "SUPPLIES"},
+                {"source": "B", "target": "C", "relation": "SUPPLIES"},
+            ],
+        })
+        # This write would close A->B->C->A
+        result = guard.check_write("C", "A", "SUPPLIES")
+        assert result.creates_contradiction
+        assert result.severity == "CRITICAL"
+
+    def test_check_write_functional_blocked(self):
+        """check_write blocks a write that would violate functional."""
+        from sigma_guard import SigmaGuard
+        guard = SigmaGuard(constraints={
+            "HAS_CAPITAL": {"functional": True},
+        })
+        guard.load_dict({
+            "vertices": [
+                {"id": "France", "label": "France"},
+                {"id": "Paris", "label": "Paris"},
+                {"id": "Lyon", "label": "Lyon"},
+            ],
+            "edges": [
+                {"source": "France", "target": "Paris", "relation": "HAS_CAPITAL"},
+            ],
+        })
+        # France already has Paris as capital; adding Lyon violates functional
+        result = guard.check_write("France", "Lyon", "HAS_CAPITAL")
+        assert result.creates_contradiction
+
+    def test_check_write_symmetric_blocked(self):
+        """check_write detects that a symmetric write is one-directional."""
+        from sigma_guard import SigmaGuard
+        guard = SigmaGuard(constraints={
+            "BORDERS": {"symmetric": True},
+        })
+        guard.load_dict({
+            "vertices": [
+                {"id": "A", "label": "A"},
+                {"id": "B", "label": "B"},
+            ],
+            "edges": [],
+        })
+        # Adding A BORDERS B without B BORDERS A is a symmetry violation
+        result = guard.check_write("A", "B", "BORDERS")
+        assert result.creates_contradiction
+
+    def test_check_write_safe(self):
+        """check_write allows a safe write."""
+        from sigma_guard import SigmaGuard
+        guard = SigmaGuard(constraints={
+            "SUPPLIES": {"acyclic": True},
+        })
+        guard.load_dict({
+            "vertices": [
+                {"id": "A", "label": "A"},
+                {"id": "B", "label": "B"},
+            ],
+            "edges": [],
+        })
+        # A->B alone is not a cycle
+        result = guard.check_write("A", "B", "SUPPLIES")
+        assert not result.creates_contradiction
 
 
 if __name__ == "__main__":

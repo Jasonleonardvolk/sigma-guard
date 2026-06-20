@@ -4,18 +4,22 @@
 # These tests call the same logic the MCP server uses, without
 # needing an MCP client connection. This verifies that the tool
 # handlers produce correct verdicts.
+#
+# All tests use EXPLICIT constraints. Unconstrained relations
+# produce zero contradictions by design.
 
 import json
 import pytest
 
 from sigma_guard import SigmaGuard
+from sigma_guard.engine import RelationConstraint
 
 
 class TestVerifyGraph:
     """Test the verify_graph tool logic."""
 
     def test_consistent_graph(self):
-        guard = SigmaGuard()
+        guard = SigmaGuard(constraints={})
         guard.load_dict({
             "vertices": [
                 {"id": "A", "label": "A", "claims": {"status": "active"}},
@@ -28,8 +32,11 @@ class TestVerifyGraph:
         verdict = guard.verify()
         assert not verdict.has_contradictions
 
-    def test_inconsistent_graph(self):
-        guard = SigmaGuard()
+    def test_inconsistent_graph_with_agree_on(self):
+        """Disagreement on constrained property is detected."""
+        guard = SigmaGuard(constraints={
+            "governs": RelationConstraint(agree_on={"vendor"}),
+        })
         guard.load_dict({
             "vertices": [
                 {"id": "Policy", "label": "Policy", "claims": {"vendor": "A"}},
@@ -43,8 +50,23 @@ class TestVerifyGraph:
         assert verdict.has_contradictions
         assert verdict.contradiction_count >= 1
 
+    def test_unconstrained_relation_no_contradiction(self):
+        """Different property values on unconstrained relation is NOT a contradiction."""
+        guard = SigmaGuard(constraints={})
+        guard.load_dict({
+            "vertices": [
+                {"id": "Policy", "label": "Policy", "claims": {"vendor": "A"}},
+                {"id": "Procurement", "label": "Procurement", "claims": {"vendor": "B"}},
+            ],
+            "edges": [
+                {"source": "Policy", "target": "Procurement", "relation": "governs"},
+            ],
+        })
+        verdict = guard.verify()
+        assert not verdict.has_contradictions
+
     def test_verdict_json_output(self):
-        guard = SigmaGuard()
+        guard = SigmaGuard(constraints={})
         guard.load_dict({
             "vertices": [
                 {"id": "A", "label": "A", "claims": {"x": "1"}},
@@ -59,20 +81,19 @@ class TestVerifyGraph:
         assert "verdict" in result
         assert "proof_id" in result
         assert "elapsed_ms" in result
-        assert result["deterministic"] if "deterministic" in result.get("certificate", {}) else True
 
 
 class TestVerifyClaims:
     """Test the verify_claims tool logic (claim-to-graph conversion)."""
 
-    def test_conflicting_claims(self):
-        # Same subject, same property, different values
+    def test_single_subject_no_contradiction(self):
+        """A single subject with multiple properties is not a graph contradiction."""
         claims = [
             {"subject": "Component_X", "property": "ships", "value": "Q2"},
             {"subject": "Component_X", "property": "production_start", "value": "Q3"},
         ]
 
-        # Build graph from claims (same logic as MCP handler)
+        # Build graph from claims
         subjects = {}
         for claim in claims:
             subj = claim["subject"]
@@ -84,52 +105,26 @@ class TestVerifyClaims:
 
         vertices = list(subjects.values())
 
-        # Single subject means no edges from shared properties.
-        # Connect all subjects in same domain.
-        subj_list = list(subjects.keys())
-        edges = []
-        if len(subj_list) == 1:
-            # Single entity with multiple properties: no contradiction
-            # possible from graph structure alone.
-            pass
-        else:
-            for i in range(len(subj_list)):
-                for j in range(i + 1, len(subj_list)):
-                    edges.append({
-                        "source": subj_list[i],
-                        "target": subj_list[j],
-                        "relation": "same_domain",
-                    })
+        # Single subject = no edges
+        guard = SigmaGuard(constraints={})
+        guard.load_dict({"vertices": vertices, "edges": []})
+        verdict = guard.verify()
+        assert not verdict.has_contradictions
 
-        # With a single subject, no edge, no contradiction detectable
-        # This is correct: contradictions require at least two entities
-        # making incompatible claims.
-        if edges:
-            guard = SigmaGuard()
-            guard.load_dict({"vertices": vertices, "edges": edges})
-            verdict = guard.verify()
-            assert verdict is not None
-
-    def test_two_subjects_conflicting(self):
-        claims = [
-            {"subject": "Source_A", "property": "status", "value": "approved"},
-            {"subject": "Source_B", "property": "status", "value": "rejected"},
-        ]
-
-        subjects = {}
-        for claim in claims:
-            subj = claim["subject"]
-            prop = claim["property"]
-            val = claim["value"]
-            if subj not in subjects:
-                subjects[subj] = {"id": subj, "label": subj, "claims": {}}
-            subjects[subj]["claims"][prop] = val
-
-        vertices = list(subjects.values())
-        edges = [{"source": "Source_A", "target": "Source_B", "relation": "shared_claims"}]
-
-        guard = SigmaGuard()
-        guard.load_dict({"vertices": vertices, "edges": edges})
+    def test_two_subjects_agree_on_conflict(self):
+        """Two subjects with disagreeing constrained properties are detected."""
+        guard = SigmaGuard(constraints={
+            "shared_claims": RelationConstraint(agree_on={"status"}),
+        })
+        guard.load_dict({
+            "vertices": [
+                {"id": "Source_A", "label": "Source_A", "claims": {"status": "approved"}},
+                {"id": "Source_B", "label": "Source_B", "claims": {"status": "rejected"}},
+            ],
+            "edges": [
+                {"source": "Source_A", "target": "Source_B", "relation": "shared_claims"},
+            ],
+        })
         verdict = guard.verify()
         assert verdict.has_contradictions
 
@@ -138,7 +133,7 @@ class TestCheckWrite:
     """Test the check_write tool logic."""
 
     def test_safe_write(self):
-        guard = SigmaGuard()
+        guard = SigmaGuard(constraints={})
         guard.load_dict({
             "vertices": [
                 {"id": "A", "label": "A", "claims": {"status": "active"}},
@@ -151,8 +146,11 @@ class TestCheckWrite:
         result = guard.check_write("A", "B", "related_to")
         assert not result.creates_contradiction
 
-    def test_contradictory_write(self):
-        guard = SigmaGuard()
+    def test_contradictory_write_agree_on(self):
+        """check_write detects property disagreement on constrained edges."""
+        guard = SigmaGuard(constraints={
+            "policy_check": RelationConstraint(agree_on={"approved"}),
+        })
         guard.load_dict({
             "vertices": [
                 {"id": "X", "label": "X", "claims": {"approved": "yes"}},
@@ -161,5 +159,24 @@ class TestCheckWrite:
             "edges": [],
         })
         result = guard.check_write("X", "Y", "policy_check")
-        # This should detect the disagreement on "approved"
         assert result.creates_contradiction
+
+    def test_contradictory_write_cycle(self):
+        """check_write detects cycles in acyclic relations."""
+        guard = SigmaGuard(constraints={
+            "DEPENDS_ON": {"acyclic": True},
+        })
+        guard.load_dict({
+            "vertices": [
+                {"id": "A", "label": "A"},
+                {"id": "B", "label": "B"},
+                {"id": "C", "label": "C"},
+            ],
+            "edges": [
+                {"source": "A", "target": "B", "relation": "DEPENDS_ON"},
+                {"source": "B", "target": "C", "relation": "DEPENDS_ON"},
+            ],
+        })
+        result = guard.check_write("C", "A", "DEPENDS_ON")
+        assert result.creates_contradiction
+        assert result.severity == "CRITICAL"

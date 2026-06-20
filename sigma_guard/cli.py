@@ -4,7 +4,7 @@
 # Usage:
 #   sigma-guard verify my_graph.json
 #   sigma-guard verify my_graph.graphml --json
-#   sigma-guard verify my_graph.edges --sign
+#   sigma-guard verify my_graph.edges
 #   sigma-guard check --source A --target B --relation supplies my_graph.json
 #
 # May 2026 | Invariant Research
@@ -22,13 +22,14 @@ def _build_parser():
         description=(
             "SIGMA Graph Guard: Pre-commit contradiction detection "
             "for graph databases. Sheaf cohomology finds structural "
-            "contradictions. 63 microseconds. Deterministic. Provable."
+            "contradictions. 35 microseconds per edit at 5M vertices. "
+            "Deterministic. Provable."
         ),
     )
     parser.add_argument(
         "--version", "-v",
         action="version",
-        version="sigma-guard 0.1.0",
+        version="sigma-guard 0.3.1",
     )
 
     subparsers = parser.add_subparsers(dest="command")
@@ -53,12 +54,6 @@ def _build_parser():
         action="store_true",
         default=False,
         help="Output full result as JSON",
-    )
-    verify_parser.add_argument(
-        "--sign", "-s",
-        action="store_true",
-        default=False,
-        help="Include cryptographic signature in the verdict",
     )
     verify_parser.add_argument(
         "--stalk-dim", "-d",

@@ -21,7 +21,7 @@ Sheaf cohomology checks structural consistency
 Verdict: SAFE / UNSAFE / CONTRADICTORY
         |
         v
-Output allowed, blocked, warned, or signed with receipt
+Output allowed, blocked, warned, or returned with receipt
 ```
 
 SIGMA does not replace the LLM. It does not compete with the generator.
@@ -152,7 +152,7 @@ if verdict.has_contradictions:
 
 ## Verification receipt
 
-Every verification produces a signed receipt:
+Every verification produces a deterministic receipt:
 
 ```json
 {

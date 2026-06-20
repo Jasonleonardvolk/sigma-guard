@@ -6,14 +6,14 @@
 
 - **Name:** sigma-guard
 - **Display name:** SIGMA Guard
-- **One-line description:** Deterministic structural contradiction detection for knowledge graphs, agent state, and LLM output using sheaf cohomology. Returns cryptographic proof receipts. Zero ML.
+- **One-line description:** Deterministic structural contradiction detection for knowledge graphs, agent state, and LLM output using sheaf cohomology. Returns deterministic proof receipts. Zero ML.
 - **Category:** Data Science & ML / Developer Tools / Quality Assurance
 - **Tool count:** 3
 - **Transport types:** stdio, Streamable HTTP
 - **Protocol version:** 2025-03-26+
 - **License:** BSL-1.1 (free tier: 10K vertices / 100K edges)
 - **Homepage:** https://invariant.pro
-- **Repository:** https://github.com/invariant-research/sigma-guard
+- **Repository:** https://github.com/Jasonleonardvolk/sigma-guard
 - **Documentation:** https://invariant.pro/docs/sigma-guard/mcp
 - **Author:** Jason Volk (jason@invariant.pro)
 - **Organization:** Invariant Research
@@ -33,7 +33,7 @@
 - Deterministic: same input always produces same output
 - Zero ML, zero GPU, zero training data
 - 35 microseconds per edit at 5M vertices
-- Cryptographic proof receipt on every verdict
+- Content-addressed proof receipt on every verdict
 - Model-agnostic: works with any LLM or agent framework
 - Catches contradictions that schema validation misses
 

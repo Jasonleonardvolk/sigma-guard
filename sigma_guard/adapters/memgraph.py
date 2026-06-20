@@ -195,13 +195,55 @@ class MemgraphGuard(GraphDatabaseAdapter):
             if result.creates_contradiction:
                 return self._check_and_decide(result)
 
-        # Check property changes (could create value contradictions)
+        # Check property changes: update the vertex's claims in
+        # the guard's state and re-verify the local neighborhood.
+        # This catches cases where changing a property on a node
+        # creates an agree_on violation with a neighbor.
         for prop in properties:
-            node_label = prop.get("node", prop.get("vertex", ""))
-            for key, value in prop.get("properties", {}).items():
-                # Property changes are checked by looking at the
-                # node's neighbors for conflicting claims
-                pass
+            node_id = prop.get("node", prop.get("vertex", ""))
+            changed_props = prop.get("properties", {})
+            if not node_id or not changed_props:
+                continue
+            # Update the vertex claims in the guard's internal state
+            if node_id in self.guard._vertex_key_claims:
+                for key, value in changed_props.items():
+                    self.guard._vertex_key_claims[node_id][key] = value
+            # Re-run constraint violations on the current edge data
+            # to check if the property change created a conflict.
+            violations = self.guard._detect_constraint_violations(
+                self.guard._edge_data,
+                self.guard._vertex_key_labels,
+                self.guard._vertex_key_claims,
+            )
+            # Filter to violations involving this node
+            node_label = self.guard._vertex_key_labels.get(
+                node_id, node_id
+            )
+            involved = {node_id, node_label}
+            relevant = [
+                v for v in violations
+                if v.location[0] in involved
+                or v.location[1] in involved
+            ]
+            if relevant:
+                severity_order = {
+                    "CRITICAL": 4, "HIGH": 3, "MODERATE": 2, "LOW": 1,
+                }
+                worst = max(
+                    relevant,
+                    key=lambda c: severity_order.get(c.severity, 0),
+                )
+                write_result = WriteCheckResult(
+                    creates_contradiction=True,
+                    severity=worst.severity,
+                    conflicting_nodes=[
+                        worst.location[0], worst.location[1]
+                    ],
+                    energy_delta=0.0,
+                    explanation=worst.explanation,
+                    proof_id=worst.proof_id,
+                )
+                return self._check_and_decide(write_result)
 
         self._write_count += 1
         return True

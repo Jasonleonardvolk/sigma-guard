@@ -1,5 +1,5 @@
 {
-  "_note": "EXAMPLE RECEIPT for documentation purposes. This receipt demonstrates the SVR format structure. The signature is a placeholder and will not verify. For real receipts, sigma-guard generates valid Ed25519 signatures.",
+  "_note": "EXAMPLE RECEIPT for documentation purposes. This receipt demonstrates the SVR format structure. The signature fields are placeholders (signature_status UNSIGNED). When Ed25519 signing is enabled, the signature and public_key fields are populated with real values.",
   "svr_version": "1.0",
   "receipt_id": "SG-20260602-A1B2C3D4",
   "receipt_type": "graph_verification",

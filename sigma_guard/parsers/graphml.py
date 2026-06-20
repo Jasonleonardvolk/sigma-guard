@@ -1,12 +1,36 @@
 # sigma_guard/parsers/graphml.py
 # Parse GraphML files into SIGMA's internal format.
+#
+# Uses defusedxml when available (recommended for untrusted input).
+# Falls back to stdlib xml.etree.ElementTree if defusedxml is not
+# installed.
 
-import xml.etree.ElementTree as ET
+import logging
 from typing import Any, Dict
 
+try:
+    import defusedxml.ElementTree as ET
+except ImportError:
+    import xml.etree.ElementTree as ET
 
-def parse_graphml(path: str) -> Dict[str, Any]:
-    """Parse a GraphML file into SIGMA's internal format."""
+logger = logging.getLogger(__name__)
+
+
+def parse_graphml(path: str, strict: bool = False) -> Dict[str, Any]:
+    """Parse a GraphML file into SIGMA's internal format.
+
+    Args:
+        path: Path to the GraphML file.
+        strict: If True, raise on missing required attributes
+            instead of filling in defaults. Default False.
+
+    Returns:
+        Dict with 'vertices' and 'edges' lists.
+
+    Raises:
+        ValueError: In strict mode, if a node lacks an 'id'
+            attribute or an edge lacks 'source'/'target'.
+    """
     tree = ET.parse(path)
     root = tree.getroot()
 
@@ -41,6 +65,10 @@ def parse_graphml(path: str) -> Dict[str, Any]:
         if not node.tag.endswith("node"):
             continue
         nid = node.get("id", "")
+        if strict and not nid:
+            raise ValueError(
+                "GraphML node missing required 'id' attribute"
+            )
         claims = {}
         label = nid
         for data in node:
@@ -66,6 +94,11 @@ def parse_graphml(path: str) -> Dict[str, Any]:
             continue
         src = edge.get("source", "")
         tgt = edge.get("target", "")
+        if strict and (not src or not tgt):
+            raise ValueError(
+                "GraphML edge missing required 'source' or 'target' "
+                "attribute"
+            )
         props = {}
         for data in edge:
             if data.tag.endswith("data"):

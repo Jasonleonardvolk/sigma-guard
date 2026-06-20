@@ -2,7 +2,7 @@
 
 > Deterministic structural verification for AI systems.
 
-SIGMA Guard detects structural contradictions in knowledge graphs, agent state, and LLM output using cellular sheaf cohomology. Every verdict is deterministic, reproducible, and cryptographically signed. Zero ML. Zero GPU. 35 microseconds per edit at 5 million vertices.
+SIGMA Guard detects structural contradictions in knowledge graphs, agent state, and LLM output using cellular sheaf cohomology. Every verdict is deterministic, reproducible, and content-addressed. Zero ML. Zero GPU. 35 microseconds per edit at 5 million vertices.
 
 ## Products
 

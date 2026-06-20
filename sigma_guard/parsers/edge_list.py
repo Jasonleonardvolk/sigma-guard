@@ -3,13 +3,35 @@
 #
 # Format: source<tab>target<tab>relation<tab>value (optional columns)
 
+import logging
 from typing import Any, Dict
 
+logger = logging.getLogger(__name__)
 
-def parse_edge_list(path: str, delimiter: str = "\t") -> Dict[str, Any]:
-    """Parse an edge list file into SIGMA's internal format."""
+
+def parse_edge_list(
+    path: str,
+    delimiter: str = "\t",
+    strict: bool = False,
+) -> Dict[str, Any]:
+    """Parse an edge list file into SIGMA's internal format.
+
+    Args:
+        path: Path to the edge list file.
+        delimiter: Column delimiter (default: tab).
+        strict: If True, raise on malformed rows instead of
+            skipping them. Default False.
+
+    Returns:
+        Dict with 'vertices' and 'edges' lists.
+
+    Raises:
+        ValueError: In strict mode, if a row has fewer than
+            two columns.
+    """
     vertices_seen = {}
     edges = []
+    skipped = 0
 
     with open(path, "r", encoding="utf-8") as f:
         for line_num, line in enumerate(f, 1):
@@ -19,6 +41,16 @@ def parse_edge_list(path: str, delimiter: str = "\t") -> Dict[str, Any]:
 
             parts = line.split(delimiter)
             if len(parts) < 2:
+                if strict:
+                    raise ValueError(
+                        "Line %d: expected at least 2 columns, "
+                        "got %d: %r" % (line_num, len(parts), line)
+                    )
+                skipped += 1
+                logger.warning(
+                    "Skipping line %d: fewer than 2 columns: %r",
+                    line_num, line,
+                )
                 continue
 
             source = parts[0].strip()
@@ -43,6 +75,11 @@ def parse_edge_list(path: str, delimiter: str = "\t") -> Dict[str, Any]:
                 "relation": relation,
                 "value": _parse_value(value) if value else None,
             })
+
+    if skipped > 0:
+        logger.warning(
+            "Skipped %d malformed row(s) in %s", skipped, path
+        )
 
     return {
         "vertices": list(vertices_seen.values()),

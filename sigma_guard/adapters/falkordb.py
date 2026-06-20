@@ -229,20 +229,52 @@ class FalkorDBGuard(GraphDatabaseAdapter):
     ) -> Dict[str, List]:
         """
         Parse a Cypher write query to extract operations.
-        Simplified parser for common CREATE/SET patterns.
-        """
-        result = {"vertices": [], "edges": [], "properties": []}
 
+        LIMITATION: This is a best-effort regex parser for common
+        CREATE patterns. It extracts relationship types and node
+        labels where possible, but does not fully parse Cypher.
+        Complex multi-clause queries, MERGE, or parameterized
+        patterns may not be extracted accurately.
+
+        For full server-side write interception, use the FalkorDB
+        module API, which provides structured transaction metadata.
+
+        When extraction fails, the write is still executed and the
+        graph is reloaded afterward, so verify_current_graph()
+        remains accurate. Only the pre-commit gate is weakened.
+        """
+        import re
+
+        result = {"vertices": [], "edges": [], "properties": []}
         upper = cypher.upper()
+
         if "CREATE" in upper and "->" in cypher:
+            # Try to extract: CREATE (a:Label)-[:REL]->(b:Label)
+            edge_pattern = re.compile(
+                r"\(\s*\w*\s*(?::([\w]+))?[^)]*\)"
+                r"\s*-\[\s*\w*\s*:([\w]+)[^\]]*\]->\s*"
+                r"\(\s*\w*\s*(?::([\w]+))?[^)]*\)"
+            )
+            match = edge_pattern.search(cypher)
+            if match:
+                src_label = match.group(1) or "unknown"
+                rel_type = match.group(2) or "CREATED"
+                tgt_label = match.group(3) or "unknown"
+            else:
+                src_label = "unknown"
+                tgt_label = "unknown"
+                rel_match = re.search(r"\[:([\w]+)", cypher)
+                rel_type = rel_match.group(1) if rel_match else "CREATED"
             result["edges"].append({
-                "source": "unknown",
-                "target": "unknown",
-                "relation": "CREATED",
+                "source": src_label,
+                "target": tgt_label,
+                "relation": rel_type,
             })
         elif "CREATE" in upper:
+            label_match = re.search(r"\(\s*\w*\s*:([\w]+)", cypher)
+            label = label_match.group(1) if label_match else "unknown"
             result["vertices"].append({
-                "label": "unknown",
+                "label": label,
                 "properties": params,
             })
 

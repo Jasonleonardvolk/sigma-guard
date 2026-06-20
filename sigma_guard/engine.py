@@ -18,12 +18,19 @@
 #   encodes those constraints as restriction maps. The sheaf does
 #   the rest.
 #
+# VERIFICATION PARITY:
+#   verify() and check_write() use the SAME constraint detection
+#   methods. Both call _detect_constraint_violations() which runs
+#   acyclic, agree_on, cardinality, transitivity, and symmetry
+#   checks on raw edge data. There is one authority path.
+#
 # May-June 2026 | Invariant Research
 
 import time
 import json
 import hashlib
 import logging
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -277,6 +284,22 @@ class SigmaGuard:
             self._parsed_data = data
             self._standalone_stalk_dim = self.stalk_dim
             self._standalone_seed = self.seed
+            # Still populate edge_data and vertex maps for constraint checks
+            self._vertex_key_labels = {}
+            self._vertex_key_claims = {}
+            self._edge_data = []
+            for v in vertices:
+                vid_key = v.get("id", v.get("label", ""))
+                label = v.get("label", vid_key)
+                self._vertex_key_labels[vid_key] = label
+                self._vertex_key_claims[vid_key] = v.get("claims", {})
+            for e in edges:
+                src_key = e.get("source", e.get("from", ""))
+                tgt_key = e.get("target", e.get("to", ""))
+                relation = e.get("relation", "")
+                self._edge_data.append((
+                    src_key, tgt_key, relation, e.get("value", None),
+                ))
             return
 
         rng = np.random.RandomState(self.seed)
@@ -431,6 +454,373 @@ class SigmaGuard:
         return r_uv, r_vu
 
     # ------------------------------------------------------------------
+    # Shared constraint violation detection
+    #
+    # These methods are the SINGLE AUTHORITY PATH for both verify()
+    # and check_write(). Both call _detect_constraint_violations()
+    # with their respective edge data. This guarantees that a pre-
+    # commit check catches exactly the same violations that a full
+    # verification would report.
+    # ------------------------------------------------------------------
+
+    def _detect_constraint_violations(
+        self,
+        edge_data: List[Tuple[str, str, str, Any]],
+        vertex_key_labels: Dict[str, str],
+        vertex_key_claims: Dict[str, Dict],
+    ) -> List[Contradiction]:
+        """
+        Run all constraint validators on the given edge data.
+
+        This is the single authority path. Both verify() and
+        check_write() call this with their respective edge sets.
+
+        Args:
+            edge_data: List of (src_key, tgt_key, relation, value) tuples.
+            vertex_key_labels: Mapping from vertex ID to display label.
+            vertex_key_claims: Mapping from vertex ID to claims dict.
+
+        Returns:
+            List of Contradiction objects for all detected violations.
+        """
+        contradictions = []
+        contradictions.extend(
+            self._detect_acyclic_violations(edge_data, vertex_key_labels)
+        )
+        contradictions.extend(
+            self._detect_agree_on_violations(
+                edge_data, vertex_key_labels, vertex_key_claims
+            )
+        )
+        contradictions.extend(
+            self._detect_cardinality_violations(edge_data, vertex_key_labels)
+        )
+        contradictions.extend(
+            self._detect_transitivity_violations(edge_data, vertex_key_labels)
+        )
+        contradictions.extend(
+            self._detect_symmetric_violations(edge_data, vertex_key_labels)
+        )
+        return contradictions
+
+    def _detect_acyclic_violations(
+        self,
+        edge_data: List[Tuple[str, str, str, Any]],
+        vertex_key_labels: Dict[str, str],
+    ) -> List[Contradiction]:
+        """Detect cycles in relations declared acyclic using DFS."""
+        contradictions = []
+
+        for rel_type, constraint in self._constraints.items():
+            if not constraint.acyclic:
+                continue
+
+            # Build directed adjacency for this relation
+            adj = {}
+            all_nodes = set()
+            for src_key, tgt_key, relation, value in edge_data:
+                if relation.upper().replace(" ", "_") == rel_type or relation == rel_type:
+                    adj.setdefault(src_key, set()).add(tgt_key)
+                    all_nodes.add(src_key)
+                    all_nodes.add(tgt_key)
+
+            if not adj:
+                continue
+
+            # DFS cycle detection: find all edges in cycles
+            WHITE, GRAY, BLACK = 0, 1, 2
+            color = {n: WHITE for n in all_nodes}
+            cycle_edges = set()
+            path = []
+
+            def dfs(node):
+                color[node] = GRAY
+                path.append(node)
+                for neighbor in adj.get(node, set()):
+                    if color.get(neighbor) == GRAY:
+                        # Found cycle: extract edges from path
+                        try:
+                            ci = path.index(neighbor)
+                        except ValueError:
+                            continue
+                        cycle_path = path[ci:]
+                        for k in range(len(cycle_path)):
+                            s = cycle_path[k]
+                            t = cycle_path[(k + 1) % len(cycle_path)]
+                            cycle_edges.add((s, t))
+                    elif color.get(neighbor) == WHITE:
+                        dfs(neighbor)
+                path.pop()
+                color[node] = BLACK
+
+            for node in all_nodes:
+                if color.get(node) == WHITE:
+                    dfs(node)
+
+            # Report each cycle edge
+            for src_key, tgt_key in cycle_edges:
+                src_label = vertex_key_labels.get(src_key, src_key)
+                tgt_label = vertex_key_labels.get(tgt_key, tgt_key)
+                proof_data = json.dumps({
+                    "cycle_edge": [src_label, tgt_label],
+                    "relation": rel_type,
+                }).encode("utf-8")
+                proof_id = generate_proof_id(proof_data)
+                contradictions.append(Contradiction(
+                    severity="CRITICAL",
+                    location=(src_label, tgt_label),
+                    edge_index=-1,
+                    energy=0.0,
+                    energy_fraction=0.0,
+                    explanation=(
+                        "Circular dependency: '%s' %s '%s', "
+                        "which is part of a cycle in a relationship "
+                        "declared acyclic."
+                        % (src_label, rel_type, tgt_label)
+                    ),
+                    proof_id=proof_id,
+                ))
+
+        return contradictions
+
+    def _detect_agree_on_violations(
+        self,
+        edge_data: List[Tuple[str, str, str, Any]],
+        vertex_key_labels: Dict[str, str],
+        vertex_key_claims: Dict[str, Dict],
+    ) -> List[Contradiction]:
+        """Detect property agreement violations across edges."""
+        contradictions = []
+
+        for src_key, tgt_key, relation, value in edge_data:
+            constraint = self.get_constraint(relation)
+            if not constraint.agree_on:
+                continue
+            src_claims = vertex_key_claims.get(src_key, {})
+            tgt_claims = vertex_key_claims.get(tgt_key, {})
+            if not isinstance(src_claims, dict) or not isinstance(tgt_claims, dict):
+                continue
+            disagreeing_keys = []
+            for key in sorted(constraint.agree_on):
+                u_val = src_claims.get(key)
+                v_val = tgt_claims.get(key)
+                if u_val is not None and v_val is not None and u_val != v_val:
+                    disagreeing_keys.append(key)
+            if disagreeing_keys:
+                src_label = vertex_key_labels.get(src_key, src_key)
+                tgt_label = vertex_key_labels.get(tgt_key, tgt_key)
+                proof_data = json.dumps({
+                    "agree_on_violation": disagreeing_keys,
+                    "source": src_label,
+                    "target": tgt_label,
+                    "relation": relation,
+                }).encode("utf-8")
+                proof_id = generate_proof_id(proof_data)
+                contradictions.append(Contradiction(
+                    severity="HIGH",
+                    location=(src_label, tgt_label),
+                    edge_index=-1,
+                    energy=0.0,
+                    energy_fraction=0.0,
+                    explanation=(
+                        "Constraint violation between '%s' and '%s' (%s): "
+                        "disagreement on %s."
+                        % (src_label, tgt_label, relation or "related",
+                           ", ".join(disagreeing_keys))
+                    ),
+                    proof_id=proof_id,
+                ))
+
+        return contradictions
+
+    def _detect_cardinality_violations(
+        self,
+        edge_data: List[Tuple[str, str, str, Any]],
+        vertex_key_labels: Dict[str, str],
+    ) -> List[Contradiction]:
+        """Detect min/max cardinality and functional constraint violations."""
+        contradictions = []
+
+        outgoing_count = defaultdict(list)
+        for src_key, tgt_key, relation, value in edge_data:
+            c = self.get_constraint(relation)
+            if c.effective_max_targets() is not None or c.min_targets is not None:
+                tgt_label = vertex_key_labels.get(tgt_key, tgt_key)
+                outgoing_count[(src_key, relation)].append(tgt_label)
+
+        for (node_key, rel), targets in outgoing_count.items():
+            c = self.get_constraint(rel)
+            node_label = vertex_key_labels.get(node_key, node_key)
+            count = len(targets)
+            eff_max = c.effective_max_targets()
+            eff_min = c.min_targets
+
+            # Check upper bound
+            if eff_max is not None and count > eff_max:
+                proof_data = json.dumps({
+                    "cardinality_violation": node_label,
+                    "relation": rel,
+                    "count": count,
+                    "max": eff_max,
+                    "targets": targets,
+                }).encode("utf-8")
+                proof_id = generate_proof_id(proof_data)
+                if eff_max == 1:
+                    explanation = (
+                        "Functional constraint violation: '%s' has %d "
+                        "%s targets (%s), but %s should be unique."
+                        % (node_label, count, rel,
+                           ", ".join(targets), rel)
+                    )
+                else:
+                    explanation = (
+                        "Cardinality violation: '%s' has %d %s targets, "
+                        "but the maximum allowed is %d."
+                        % (node_label, count, rel, eff_max)
+                    )
+                contradictions.append(Contradiction(
+                    severity="HIGH",
+                    location=(node_label, ", ".join(targets)),
+                    edge_index=-1,
+                    energy=0.0,
+                    energy_fraction=0.0,
+                    explanation=explanation,
+                    proof_id=proof_id,
+                ))
+
+            # Check lower bound
+            if eff_min is not None and count < eff_min:
+                proof_data = json.dumps({
+                    "cardinality_violation": node_label,
+                    "relation": rel,
+                    "count": count,
+                    "min": eff_min,
+                }).encode("utf-8")
+                proof_id = generate_proof_id(proof_data)
+                contradictions.append(Contradiction(
+                    severity="MODERATE",
+                    location=(node_label, "%d %s edges" % (count, rel)),
+                    edge_index=-1,
+                    energy=0.0,
+                    energy_fraction=0.0,
+                    explanation=(
+                        "Cardinality violation: '%s' has %d %s targets, "
+                        "but the minimum required is %d."
+                        % (node_label, count, rel, eff_min)
+                    ),
+                    proof_id=proof_id,
+                ))
+
+        return contradictions
+
+    def _detect_transitivity_violations(
+        self,
+        edge_data: List[Tuple[str, str, str, Any]],
+        vertex_key_labels: Dict[str, str],
+    ) -> List[Contradiction]:
+        """Detect one-hop transitivity gaps."""
+        contradictions = []
+
+        for rel_type, constraint in self._constraints.items():
+            if not constraint.transitive:
+                continue
+
+            # Build adjacency for this relation type
+            adj = {}
+            edge_set = set()
+            for src_key, tgt_key, relation, value in edge_data:
+                if relation.upper().replace(" ", "_") == rel_type or relation == rel_type:
+                    adj.setdefault(src_key, set()).add(tgt_key)
+                    edge_set.add((src_key, tgt_key))
+
+            # For each A->B->C, check A->C
+            gaps_found = 0
+            max_gaps = 50  # cap to avoid flooding on large ontologies
+            for a_key, b_keys in adj.items():
+                if gaps_found >= max_gaps:
+                    break
+                for b_key in b_keys:
+                    if gaps_found >= max_gaps:
+                        break
+                    c_keys = adj.get(b_key, set())
+                    for c_key in c_keys:
+                        if c_key == a_key:
+                            continue  # skip self-loops
+                        if (a_key, c_key) not in edge_set:
+                            gaps_found += 1
+                            if gaps_found > max_gaps:
+                                break
+                            a_label = vertex_key_labels.get(a_key, a_key)
+                            b_label = vertex_key_labels.get(b_key, b_key)
+                            c_label = vertex_key_labels.get(c_key, c_key)
+                            proof_data = json.dumps({
+                                "transitivity_gap": [a_label, b_label, c_label],
+                                "relation": rel_type,
+                            }).encode("utf-8")
+                            proof_id = generate_proof_id(proof_data)
+                            contradictions.append(Contradiction(
+                                severity="MODERATE",
+                                location=(a_label, c_label),
+                                edge_index=-1,
+                                energy=0.0,
+                                energy_fraction=0.0,
+                                explanation=(
+                                    "Transitivity gap: '%s' %s '%s' and "
+                                    "'%s' %s '%s', but '%s' does not "
+                                    "%s '%s'."
+                                    % (a_label, rel_type, b_label,
+                                       b_label, rel_type, c_label,
+                                       a_label, rel_type, c_label)
+                                ),
+                                proof_id=proof_id,
+                            ))
+
+        return contradictions
+
+    def _detect_symmetric_violations(
+        self,
+        edge_data: List[Tuple[str, str, str, Any]],
+        vertex_key_labels: Dict[str, str],
+    ) -> List[Contradiction]:
+        """Detect missing reciprocal edges for symmetric relations."""
+        contradictions = []
+
+        # Use raw edge data to preserve directionality. The SheafGraph
+        # may store edges as undirected pairs, which would cause every
+        # edge to appear one-directional and produce false positives.
+        directed_edges = {}
+        for src_key, tgt_key, relation, value in edge_data:
+            c = self.get_constraint(relation)
+            if c.symmetric:
+                directed_edges[(src_key, tgt_key, relation)] = True
+
+        for (src_key, tgt_key, rel) in directed_edges:
+            if (tgt_key, src_key, rel) not in directed_edges:
+                src_label = vertex_key_labels.get(src_key, src_key)
+                tgt_label = vertex_key_labels.get(tgt_key, tgt_key)
+                proof_data = json.dumps({
+                    "symmetry_violation": [src_label, tgt_label],
+                    "relation": rel,
+                }).encode("utf-8")
+                proof_id = generate_proof_id(proof_data)
+                contradictions.append(Contradiction(
+                    severity="MODERATE",
+                    location=(src_label, tgt_label),
+                    edge_index=-1,
+                    energy=0.0,
+                    energy_fraction=0.0,
+                    explanation=(
+                        "Symmetry violation: '%s' %s '%s', "
+                        "but '%s' does not %s '%s'."
+                        % (src_label, rel, tgt_label,
+                           tgt_label, rel, src_label)
+                    ),
+                    proof_id=proof_id,
+                ))
+
+        return contradictions
+
+    # ------------------------------------------------------------------
     # Semantic disagreement detection
     # ------------------------------------------------------------------
 
@@ -476,7 +866,7 @@ class SigmaGuard:
         Run full sheaf cohomology verification on the loaded graph.
 
         Returns a Verdict with all detected contradictions, their
-        locations, severities, and cryptographic proofs.
+        locations, severities, and deterministic proofs.
         """
         if getattr(self, '_use_standalone', False):
             return self._verify_standalone()
@@ -500,296 +890,14 @@ class SigmaGuard:
         cert = self._cohomology.obstruction_certificate(section)
         total_energy = cert["total_energy"]
 
-        # H^1 is computed for the certificate but NOT used for finding
-        # localization. All constraint detection uses direct graph checks
-        # on the raw directed edge data, which is more precise than
-        # energy localization (which spreads across all edges of a type).
-        contradictions = []
+        # ALL constraint detection uses the shared authority path.
+        contradictions = self._detect_constraint_violations(
+            self._edge_data,
+            self._vertex_key_labels,
+            self._vertex_key_claims,
+        )
 
         elapsed_ms = (time.perf_counter() - t0) * 1000
-
-        # ALL CONSTRAINT CHECKS use raw edge_data to preserve
-        # directionality from the source database.
-        if self._edge_data:
-            from collections import defaultdict
-
-            # --- acyclic: DFS cycle detection ---
-            # Finds the actual edges that participate in cycles,
-            # not all edges of the relation type (no energy spreading).
-            for rel_type, constraint in self._constraints.items():
-                if not constraint.acyclic:
-                    continue
-                # Build directed adjacency for this relation
-                adj = {}       # src_key -> set of tgt_keys
-                all_nodes = set()
-                for src_key, tgt_key, relation, value in self._edge_data:
-                    if relation.upper().replace(" ", "_") == rel_type or relation == rel_type:
-                        adj.setdefault(src_key, set()).add(tgt_key)
-                        all_nodes.add(src_key)
-                        all_nodes.add(tgt_key)
-
-                if not adj:
-                    continue
-
-                # DFS cycle detection: find all edges in cycles
-                WHITE, GRAY, BLACK = 0, 1, 2
-                color = {n: WHITE for n in all_nodes}
-                cycle_edges = set()
-                path = []
-
-                def dfs(node):
-                    color[node] = GRAY
-                    path.append(node)
-                    for neighbor in adj.get(node, set()):
-                        if color.get(neighbor) == GRAY:
-                            # Found cycle: extract edges from path
-                            try:
-                                ci = path.index(neighbor)
-                            except ValueError:
-                                continue
-                            cycle_path = path[ci:]
-                            for k in range(len(cycle_path)):
-                                s = cycle_path[k]
-                                t = cycle_path[(k + 1) % len(cycle_path)]
-                                cycle_edges.add((s, t))
-                        elif color.get(neighbor) == WHITE:
-                            dfs(neighbor)
-                    path.pop()
-                    color[node] = BLACK
-
-                for node in all_nodes:
-                    if color.get(node) == WHITE:
-                        dfs(node)
-
-                # Report each cycle edge
-                for src_key, tgt_key in cycle_edges:
-                    src_label = self._vertex_key_labels.get(src_key, src_key)
-                    tgt_label = self._vertex_key_labels.get(tgt_key, tgt_key)
-                    proof_data = json.dumps({
-                        "cycle_edge": [src_label, tgt_label],
-                        "relation": rel_type,
-                    }).encode("utf-8")
-                    proof_id = generate_proof_id(proof_data)
-                    contradictions.append(Contradiction(
-                        severity="CRITICAL",
-                        location=(src_label, tgt_label),
-                        edge_index=-1,
-                        energy=0.0,
-                        energy_fraction=0.0,
-                        explanation=(
-                            "Circular dependency: '%s' %s '%s', "
-                            "which is part of a cycle in a relationship "
-                            "declared acyclic."
-                            % (src_label, rel_type, tgt_label)
-                        ),
-                        proof_id=proof_id,
-                    ))
-
-            # --- agree_on: property values must match across edge ---
-            for src_key, tgt_key, relation, value in self._edge_data:
-                constraint = self.get_constraint(relation)
-                if not constraint.agree_on:
-                    continue
-                src_claims = self._vertex_key_claims.get(src_key, {})
-                tgt_claims = self._vertex_key_claims.get(tgt_key, {})
-                if not isinstance(src_claims, dict) or not isinstance(tgt_claims, dict):
-                    continue
-                disagreeing_keys = []
-                for key in sorted(constraint.agree_on):
-                    u_val = src_claims.get(key)
-                    v_val = tgt_claims.get(key)
-                    if u_val is not None and v_val is not None and u_val != v_val:
-                        disagreeing_keys.append(key)
-                if disagreeing_keys:
-                    src_label = self._vertex_key_labels.get(src_key, src_key)
-                    tgt_label = self._vertex_key_labels.get(tgt_key, tgt_key)
-                    proof_data = json.dumps({
-                        "agree_on_violation": disagreeing_keys,
-                        "source": src_label,
-                        "target": tgt_label,
-                        "relation": relation,
-                    }).encode("utf-8")
-                    proof_id = generate_proof_id(proof_data)
-                    contradictions.append(Contradiction(
-                        severity="HIGH",
-                        location=(src_label, tgt_label),
-                        edge_index=-1,
-                        energy=0.0,
-                        energy_fraction=0.0,
-                        explanation=(
-                            "Constraint violation between '%s' and '%s' (%s): "
-                            "disagreement on %s."
-                            % (src_label, tgt_label, relation or "related",
-                               ", ".join(disagreeing_keys))
-                        ),
-                        proof_id=proof_id,
-                    ))
-
-        # --- cardinality: min/max outgoing edges of this type ---
-        # Generalizes the old functional check. functional=True is
-        # shorthand for max_targets=1. New: min_targets and max_targets
-        # support "a board has 5-15 directors" or "exactly 2 parents."
-        if self._edge_data:
-            from collections import defaultdict
-            outgoing_count = defaultdict(list)  # (src_key, rel) -> [target_labels]
-            for src_key, tgt_key, relation, value in self._edge_data:
-                c = self.get_constraint(relation)
-                if c.effective_max_targets() is not None or c.min_targets is not None:
-                    tgt_label = self._vertex_key_labels.get(tgt_key, tgt_key)
-                    outgoing_count[(src_key, relation)].append(tgt_label)
-
-            for (node_key, rel), targets in outgoing_count.items():
-                c = self.get_constraint(rel)
-                node_label = self._vertex_key_labels.get(node_key, node_key)
-                count = len(targets)
-                eff_max = c.effective_max_targets()
-                eff_min = c.min_targets
-
-                # Check upper bound
-                if eff_max is not None and count > eff_max:
-                    proof_data = json.dumps({
-                        "cardinality_violation": node_label,
-                        "relation": rel,
-                        "count": count,
-                        "max": eff_max,
-                        "targets": targets,
-                    }).encode("utf-8")
-                    proof_id = generate_proof_id(proof_data)
-                    if eff_max == 1:
-                        explanation = (
-                            "Functional constraint violation: '%s' has %d "
-                            "%s targets (%s), but %s should be unique."
-                            % (node_label, count, rel,
-                               ", ".join(targets), rel)
-                        )
-                    else:
-                        explanation = (
-                            "Cardinality violation: '%s' has %d %s targets, "
-                            "but the maximum allowed is %d."
-                            % (node_label, count, rel, eff_max)
-                        )
-                    contradictions.append(Contradiction(
-                        severity="HIGH",
-                        location=(node_label, ", ".join(targets)),
-                        edge_index=-1,
-                        energy=0.0,
-                        energy_fraction=0.0,
-                        explanation=explanation,
-                        proof_id=proof_id,
-                    ))
-
-                # Check lower bound
-                if eff_min is not None and count < eff_min:
-                    proof_data = json.dumps({
-                        "cardinality_violation": node_label,
-                        "relation": rel,
-                        "count": count,
-                        "min": eff_min,
-                    }).encode("utf-8")
-                    proof_id = generate_proof_id(proof_data)
-                    contradictions.append(Contradiction(
-                        severity="MODERATE",
-                        location=(node_label, "%d %s edges" % (count, rel)),
-                        edge_index=-1,
-                        energy=0.0,
-                        energy_fraction=0.0,
-                        explanation=(
-                            "Cardinality violation: '%s' has %d %s targets, "
-                            "but the minimum required is %d."
-                            % (node_label, count, rel, eff_min)
-                        ),
-                        proof_id=proof_id,
-                    ))
-
-            # --- transitive: if (A, B) and (B, C) exist, (A, C) must exist ---
-            # Only checks one-hop gaps (A->B->C without A->C).
-            # Does not compute the full transitive closure.
-            for rel_type, constraint in self._constraints.items():
-                if not constraint.transitive:
-                    continue
-                # Build adjacency for this relation type
-                adj = {}       # src_key -> set of tgt_keys
-                edge_set = set()  # (src_key, tgt_key) for fast lookup
-                for src_key, tgt_key, relation, value in self._edge_data:
-                    if relation.upper().replace(" ", "_") == rel_type or relation == rel_type:
-                        adj.setdefault(src_key, set()).add(tgt_key)
-                        edge_set.add((src_key, tgt_key))
-
-                # For each A->B->C, check A->C
-                gaps_found = 0
-                max_gaps = 50  # cap to avoid flooding on large ontologies
-                for a_key, b_keys in adj.items():
-                    if gaps_found >= max_gaps:
-                        break
-                    for b_key in b_keys:
-                        if gaps_found >= max_gaps:
-                            break
-                        c_keys = adj.get(b_key, set())
-                        for c_key in c_keys:
-                            if c_key == a_key:
-                                continue  # skip self-loops
-                            if (a_key, c_key) not in edge_set:
-                                gaps_found += 1
-                                if gaps_found > max_gaps:
-                                    break
-                                a_label = self._vertex_key_labels.get(a_key, a_key)
-                                b_label = self._vertex_key_labels.get(b_key, b_key)
-                                c_label = self._vertex_key_labels.get(c_key, c_key)
-                                proof_data = json.dumps({
-                                    "transitivity_gap": [a_label, b_label, c_label],
-                                    "relation": rel_type,
-                                }).encode("utf-8")
-                                proof_id = generate_proof_id(proof_data)
-                                contradictions.append(Contradiction(
-                                    severity="MODERATE",
-                                    location=(a_label, c_label),
-                                    edge_index=-1,
-                                    energy=0.0,
-                                    energy_fraction=0.0,
-                                    explanation=(
-                                        "Transitivity gap: '%s' %s '%s' and "
-                                        "'%s' %s '%s', but '%s' does not "
-                                        "%s '%s'."
-                                        % (a_label, rel_type, b_label,
-                                           b_label, rel_type, c_label,
-                                           a_label, rel_type, c_label)
-                                    ),
-                                    proof_id=proof_id,
-                                ))
-
-            # --- symmetric: if (A, B) exists, (B, A) must exist ---
-            # Use raw edge data to preserve directionality. The SheafGraph
-            # may store edges as undirected pairs, which would cause every
-            # edge to appear one-directional and produce false positives.
-            directed_edges = {}  # (src_key, tgt_key, rel) -> True
-            for src_key, tgt_key, relation, value in self._edge_data:
-                c = self.get_constraint(relation)
-                if c.symmetric:
-                    directed_edges[(src_key, tgt_key, relation)] = True
-
-            for (src_key, tgt_key, rel) in directed_edges:
-                if (tgt_key, src_key, rel) not in directed_edges:
-                    src_label = self._vertex_key_labels.get(src_key, src_key)
-                    tgt_label = self._vertex_key_labels.get(tgt_key, tgt_key)
-                    proof_data = json.dumps({
-                        "symmetry_violation": [src_label, tgt_label],
-                        "relation": rel,
-                    }).encode("utf-8")
-                    proof_id = generate_proof_id(proof_data)
-                    contradictions.append(Contradiction(
-                        severity="MODERATE",
-                        location=(src_label, tgt_label),
-                        edge_index=-1,
-                        energy=0.0,
-                        energy_fraction=0.0,
-                        explanation=(
-                            "Symmetry violation: '%s' %s '%s', "
-                            "but '%s' does not %s '%s'."
-                            % (src_label, rel, tgt_label,
-                               tgt_label, rel, src_label)
-                        ),
-                        proof_id=proof_id,
-                    ))
 
         root_data = json.dumps({
             "h1_dim": h1_dim,
@@ -841,8 +949,9 @@ class SigmaGuard:
         """
         Check whether a proposed write would create a contradiction.
 
-        Adds the proposed edge, checks whether the NEW edge carries
-        significant obstruction energy, and returns the result.
+        Uses the SAME constraint validators as verify(). Adds the
+        proposed edge to a copy of edge_data, runs all checks, and
+        filters for violations involving the new edge's endpoints.
         """
         if getattr(self, '_use_standalone', False):
             return self._check_write_standalone(source, target, relation, value)
@@ -852,119 +961,85 @@ class SigmaGuard:
 
         t0 = time.perf_counter()
 
-        src_vid = self._vertex_map.get(source)
-        tgt_vid = self._vertex_map.get(target)
+        # Build proposed edge data by appending the new edge
+        proposed_edge_data = list(self._edge_data)
+        proposed_edge_data.append((source, target, relation, value))
 
-        created_src = False
-        created_tgt = False
+        # Ensure source and target are in the vertex maps
+        proposed_labels = dict(self._vertex_key_labels)
+        proposed_claims = dict(self._vertex_key_claims)
+        if source not in proposed_labels:
+            proposed_labels[source] = source
+            proposed_claims[source] = {}
+        if target not in proposed_labels:
+            proposed_labels[target] = target
+            proposed_claims[target] = {}
 
-        if src_vid is None:
-            src_vid = self._graph.add_vertex(label=source)
-            self._vertex_map[source] = src_vid
-            self._vertex_labels[src_vid] = source
-            created_src = True
-
-        if tgt_vid is None:
-            tgt_vid = self._graph.add_vertex(label=target)
-            self._vertex_map[target] = tgt_vid
-            self._vertex_labels[tgt_vid] = target
-            created_tgt = True
-
-        has_edge = self._graph.has_edge(src_vid, tgt_vid)
-
-        if has_edge:
-            elapsed_us = (time.perf_counter() - t0) * 1_000_000
-            if created_tgt:
-                self._graph.remove_vertex(tgt_vid)
-                del self._vertex_map[target]
-                del self._vertex_labels[tgt_vid]
-            if created_src:
-                self._graph.remove_vertex(src_vid)
-                del self._vertex_map[source]
-                del self._vertex_labels[src_vid]
-            return WriteCheckResult(
-                creates_contradiction=False,
-                elapsed_us=elapsed_us,
-            )
-
-        new_edge_idx = self._graph.add_edge(src_vid, tgt_vid, label=relation)
-        self._edge_relations.append(relation)
-        self._rebuild_sheaf()
-
-        section = self._build_section_from_claims()
-        edge_energies = self._sheaf.dirichlet_energy_per_edge(section)
-        total_energy = sum(edge_energies.values())
-
-        new_edge_energy = edge_energies.get(new_edge_idx, 0.0)
-
-        has_disagreement, disagreeing_keys = (
-            self._has_semantic_disagreement(src_vid, tgt_vid, relation)
+        # Run the same constraint validators used by verify()
+        all_violations = self._detect_constraint_violations(
+            proposed_edge_data,
+            proposed_labels,
+            proposed_claims,
         )
 
-        energy_fraction = new_edge_energy / (total_energy + 1e-12)
-        creates_contradiction = (
-            (new_edge_energy > 0.5 and has_disagreement)
-            or energy_fraction > 0.05
-        )
+        # Filter: only report violations involving the new edge's endpoints
+        src_label = proposed_labels.get(source, source)
+        tgt_label = proposed_labels.get(target, target)
+        involved_labels = {source, target, src_label, tgt_label}
+
+        new_write_violations = []
+        for c in all_violations:
+            loc_a, loc_b = c.location
+            if loc_a in involved_labels or loc_b in involved_labels:
+                new_write_violations.append(c)
 
         elapsed_us = (time.perf_counter() - t0) * 1_000_000
 
-        if creates_contradiction:
+        if new_write_violations:
+            # Use the highest severity among all violations
+            severity_order = {"CRITICAL": 4, "HIGH": 3, "MODERATE": 2, "LOW": 1}
+            worst = max(
+                new_write_violations,
+                key=lambda c: severity_order.get(c.severity, 0),
+            )
+
+            # Build explanation from all violations
+            if len(new_write_violations) == 1:
+                explanation = new_write_violations[0].explanation
+            else:
+                parts = []
+                for v in new_write_violations:
+                    parts.append("[%s] %s" % (v.severity, v.explanation))
+                explanation = (
+                    "Write '%s' -> '%s' (%s) triggers %d violations: %s"
+                    % (source, target, relation or "unknown",
+                       len(new_write_violations),
+                       " | ".join(parts))
+                )
+
             proof_data = json.dumps({
                 "write_source": source,
                 "write_target": target,
-                "new_edge_energy": new_edge_energy,
-                "energy_fraction": energy_fraction,
+                "relation": relation,
+                "violation_count": len(new_write_violations),
+                "worst_severity": worst.severity,
             }).encode("utf-8")
             proof_id = generate_proof_id(proof_data)
 
-            severity = _classify_severity(energy_fraction)
-
-            constraint = self.get_constraint(relation)
-            if constraint.acyclic:
-                explanation = (
-                    "Circular dependency detected: '%s' -> '%s' (%s) "
-                    "closes a cycle in a relationship declared acyclic. "
-                    "Energy: %.4f (%.1f%% of total)."
-                    % (source, target, relation or "unknown",
-                       new_edge_energy, energy_fraction * 100)
-                )
-            elif disagreeing_keys:
-                explanation = (
-                    "Write '%s' -> '%s' (%s) creates a structural "
-                    "contradiction. Disagreement on: %s. "
-                    "Energy: %.4f (%.1f%% of total)."
-                    % (source, target, relation or "unknown",
-                       ", ".join(disagreeing_keys),
-                       new_edge_energy, energy_fraction * 100)
-                )
-            else:
-                explanation = (
-                    "Write '%s' -> '%s' (%s) creates a structural "
-                    "contradiction. Energy: %.4f (%.1f%% of total)."
-                    % (source, target, relation or "unknown",
-                       new_edge_energy, energy_fraction * 100)
-                )
-
-            self._rollback_write(
-                src_vid, tgt_vid, created_src, created_tgt,
-                source, target,
-            )
+            conflicting_nodes = set()
+            for v in new_write_violations:
+                conflicting_nodes.add(v.location[0])
+                conflicting_nodes.add(v.location[1])
 
             return WriteCheckResult(
                 creates_contradiction=True,
-                severity=severity,
-                conflicting_nodes=[source, target],
-                energy_delta=new_edge_energy,
+                severity=worst.severity,
+                conflicting_nodes=sorted(conflicting_nodes),
+                energy_delta=0.0,
                 explanation=explanation,
                 proof_id=proof_id,
                 elapsed_us=elapsed_us,
             )
-
-        self._rollback_write(
-            src_vid, tgt_vid, created_src, created_tgt,
-            source, target,
-        )
 
         return WriteCheckResult(
             creates_contradiction=False,
@@ -978,7 +1053,6 @@ class SigmaGuard:
     def _verify_standalone(self) -> Verdict:
         """Verify using the standalone verifier (no SIGMA engine)."""
         from sigma_guard.standalone_verifier import build_sheaf, compute_cohomology
-        from collections import defaultdict
 
         t0 = time.perf_counter()
 
@@ -992,309 +1066,13 @@ class SigmaGuard:
         h1_dim = result["h1_dim"]
         total_energy = result["total_energy"]
         spectral_gap = result["spectral_gap"]
-        edge_energies = result["edge_energies"]
 
-        vertices = self._parsed_data.get("vertices", [])
-        v_index = {}
-        v_claims = []
-        v_labels = []
-        for i, v in enumerate(vertices):
-            vid = v.get("id", v.get("label", str(i)))
-            label = v.get("label", vid)
-            v_index[vid] = i
-            v_claims.append(v.get("claims", {}))
-            v_labels.append(label)
-
-        edges_raw = self._parsed_data.get("edges", [])
-        edge_pairs = []
-        edge_rels = []
-        seen_edges = set()
-        for e in edges_raw:
-            src = e.get("source", e.get("from", ""))
-            tgt = e.get("target", e.get("to", ""))
-            if src not in v_index or tgt not in v_index:
-                continue
-            si = v_index[src]
-            ti = v_index[tgt]
-            if si == ti:
-                continue
-            a, b = min(si, ti), max(si, ti)
-            if (a, b) not in seen_edges:
-                seen_edges.add((a, b))
-                edge_pairs.append((src, tgt, a, b))
-                edge_rels.append(e.get("relation", ""))
-
-        contradictions = []
-
-        # --- H^1-based detection (acyclic constraints only) ---
-        has_any_acyclic = any(
-            c.acyclic for c in self._constraints.values()
+        # ALL constraint detection uses the shared authority path.
+        contradictions = self._detect_constraint_violations(
+            self._edge_data,
+            self._vertex_key_labels,
+            self._vertex_key_claims,
         )
-        if has_any_acyclic and h1_dim > 0 and total_energy > 1e-8:
-            energy_floor = total_energy * ENERGY_REPORT_FLOOR
-
-            ranked = sorted(
-                enumerate(edge_energies), key=lambda x: -x[1]
-            )
-            for e_idx, energy in ranked:
-                if energy < 1e-8:
-                    break
-                if e_idx >= len(edge_pairs):
-                    continue
-
-                src_label, tgt_label, si, ti = edge_pairs[e_idx]
-                fraction = energy / total_energy
-                relation = edge_rels[e_idx] if e_idx < len(edge_rels) else ""
-
-                # Only report edges whose relation is declared acyclic
-                constraint = self.get_constraint(relation)
-                if not constraint.acyclic:
-                    continue
-
-                if energy < energy_floor:
-                    continue
-
-                severity = _classify_severity(fraction)
-                u_label = v_labels[si] if si < len(v_labels) else src_label
-                v_label = v_labels[ti] if ti < len(v_labels) else tgt_label
-
-                proof_data = json.dumps({
-                    "edge": e_idx,
-                    "energy": energy,
-                    "h1_dim": h1_dim,
-                }).encode("utf-8")
-                proof_id = generate_proof_id(proof_data)
-
-                explanation = self._generate_standalone_explanation(
-                    u_label, v_label, relation, energy, fraction, [],
-                )
-
-                contradictions.append(Contradiction(
-                    severity=severity,
-                    location=(u_label, v_label),
-                    edge_index=e_idx,
-                    energy=energy,
-                    energy_fraction=fraction,
-                    explanation=explanation,
-                    proof_id=proof_id,
-                ))
-
-        # --- Direct graph checks (same as full engine path) ---
-
-        # agree_on: property values must match across edge
-        for e_idx in range(len(edge_pairs)):
-            if e_idx >= len(edge_rels):
-                break
-            relation = edge_rels[e_idx]
-            constraint = self.get_constraint(relation)
-            if not constraint.agree_on:
-                continue
-            src_label, tgt_label, si, ti = edge_pairs[e_idx]
-            src_claims = v_claims[si] if si < len(v_claims) else {}
-            tgt_claims = v_claims[ti] if ti < len(v_claims) else {}
-            disagreeing_keys = []
-            for key in sorted(constraint.agree_on):
-                u_val = src_claims.get(key)
-                v_val = tgt_claims.get(key)
-                if u_val is not None and v_val is not None and u_val != v_val:
-                    disagreeing_keys.append(key)
-            if disagreeing_keys:
-                u_label = v_labels[si] if si < len(v_labels) else src_label
-                v_label = v_labels[ti] if ti < len(v_labels) else tgt_label
-                proof_data = json.dumps({
-                    "edge": e_idx,
-                    "agree_on_violation": disagreeing_keys,
-                }).encode("utf-8")
-                proof_id = generate_proof_id(proof_data)
-                contradictions.append(Contradiction(
-                    severity="HIGH",
-                    location=(u_label, v_label),
-                    edge_index=e_idx,
-                    energy=0.0,
-                    energy_fraction=0.0,
-                    explanation=(
-                        "Constraint violation between '%s' and '%s' (%s): "
-                        "disagreement on %s."
-                        % (u_label, v_label, relation or "related",
-                           ", ".join(disagreeing_keys))
-                    ),
-                    proof_id=proof_id,
-                ))
-
-        # functional/cardinality: min/max outgoing edges per source
-        outgoing_count = defaultdict(list)
-        for e in edges_raw:
-            src = e.get("source", e.get("from", ""))
-            tgt = e.get("target", e.get("to", ""))
-            rel = e.get("relation", "")
-            if src not in v_index or tgt not in v_index:
-                continue
-            c = self.get_constraint(rel)
-            if c.effective_max_targets() is not None or c.min_targets is not None:
-                si = v_index[src]
-                ti = v_index[tgt]
-                tgt_label = v_labels[ti] if ti < len(v_labels) else tgt
-                outgoing_count[(src, rel)].append(tgt_label)
-
-        for (node_id, rel), targets in outgoing_count.items():
-            c = self.get_constraint(rel)
-            count = len(targets)
-            eff_max = c.effective_max_targets()
-            eff_min = c.min_targets
-            si = v_index.get(node_id, -1)
-            node_label = v_labels[si] if 0 <= si < len(v_labels) else node_id
-
-            if eff_max is not None and count > eff_max:
-                proof_data = json.dumps({
-                    "cardinality_violation": node_label,
-                    "relation": rel,
-                    "count": count,
-                    "max": eff_max,
-                    "targets": targets,
-                }).encode("utf-8")
-                proof_id = generate_proof_id(proof_data)
-                if eff_max == 1:
-                    explanation = (
-                        "Functional constraint violation: '%s' has %d "
-                        "%s targets (%s), but %s should be unique."
-                        % (node_label, count, rel,
-                           ", ".join(targets), rel)
-                    )
-                else:
-                    explanation = (
-                        "Cardinality violation: '%s' has %d %s targets, "
-                        "but the maximum allowed is %d."
-                        % (node_label, count, rel, eff_max)
-                    )
-                contradictions.append(Contradiction(
-                    severity="HIGH",
-                    location=(node_label, ", ".join(targets)),
-                    edge_index=-1,
-                    energy=0.0,
-                    energy_fraction=0.0,
-                    explanation=explanation,
-                    proof_id=proof_id,
-                ))
-
-            if eff_min is not None and count < eff_min:
-                proof_data = json.dumps({
-                    "cardinality_violation": node_label,
-                    "relation": rel,
-                    "count": count,
-                    "min": eff_min,
-                }).encode("utf-8")
-                proof_id = generate_proof_id(proof_data)
-                contradictions.append(Contradiction(
-                    severity="MODERATE",
-                    location=(node_label, "%d %s edges" % (count, rel)),
-                    edge_index=-1,
-                    energy=0.0,
-                    energy_fraction=0.0,
-                    explanation=(
-                        "Cardinality violation: '%s' has %d %s targets, "
-                        "but the minimum required is %d."
-                        % (node_label, count, rel, eff_min)
-                    ),
-                    proof_id=proof_id,
-                ))
-
-        # symmetric: if (A, B) exists, (B, A) must exist
-        directed_edges = {}
-        for e in edges_raw:
-            src = e.get("source", e.get("from", ""))
-            tgt = e.get("target", e.get("to", ""))
-            rel = e.get("relation", "")
-            if src not in v_index or tgt not in v_index:
-                continue
-            c = self.get_constraint(rel)
-            if c.symmetric:
-                directed_edges[(src, tgt, rel)] = True
-
-        for (src, tgt, rel) in directed_edges:
-            if (tgt, src, rel) not in directed_edges:
-                si = v_index.get(src, -1)
-                ti = v_index.get(tgt, -1)
-                src_label = v_labels[si] if 0 <= si < len(v_labels) else src
-                tgt_label = v_labels[ti] if 0 <= ti < len(v_labels) else tgt
-                proof_data = json.dumps({
-                    "symmetry_violation": [src_label, tgt_label],
-                    "relation": rel,
-                }).encode("utf-8")
-                proof_id = generate_proof_id(proof_data)
-                contradictions.append(Contradiction(
-                    severity="MODERATE",
-                    location=(src_label, tgt_label),
-                    edge_index=-1,
-                    energy=0.0,
-                    energy_fraction=0.0,
-                    explanation=(
-                        "Symmetry violation: '%s' %s '%s', "
-                        "but '%s' does not %s '%s'."
-                        % (src_label, rel, tgt_label,
-                           tgt_label, rel, src_label)
-                    ),
-                    proof_id=proof_id,
-                ))
-
-        # transitive: if (A, B) and (B, C) exist, (A, C) must exist
-        for rel_type, constraint in self._constraints.items():
-            if not constraint.transitive:
-                continue
-            adj = {}
-            edge_set = set()
-            for e in edges_raw:
-                src = e.get("source", e.get("from", ""))
-                tgt = e.get("target", e.get("to", ""))
-                rel = e.get("relation", "")
-                if src not in v_index or tgt not in v_index:
-                    continue
-                if rel.upper().replace(" ", "_") == rel_type or rel == rel_type:
-                    adj.setdefault(src, set()).add(tgt)
-                    edge_set.add((src, tgt))
-
-            gaps_found = 0
-            max_gaps = 50
-            for a_key, b_keys in adj.items():
-                if gaps_found >= max_gaps:
-                    break
-                for b_key in b_keys:
-                    if gaps_found >= max_gaps:
-                        break
-                    c_keys = adj.get(b_key, set())
-                    for c_key in c_keys:
-                        if c_key == a_key:
-                            continue
-                        if (a_key, c_key) not in edge_set:
-                            gaps_found += 1
-                            if gaps_found > max_gaps:
-                                break
-                            a_si = v_index.get(a_key, -1)
-                            b_si = v_index.get(b_key, -1)
-                            c_si = v_index.get(c_key, -1)
-                            a_label = v_labels[a_si] if 0 <= a_si < len(v_labels) else a_key
-                            b_label = v_labels[b_si] if 0 <= b_si < len(v_labels) else b_key
-                            c_label = v_labels[c_si] if 0 <= c_si < len(v_labels) else c_key
-                            proof_data = json.dumps({
-                                "transitivity_gap": [a_label, b_label, c_label],
-                                "relation": rel_type,
-                            }).encode("utf-8")
-                            proof_id = generate_proof_id(proof_data)
-                            contradictions.append(Contradiction(
-                                severity="MODERATE",
-                                location=(a_label, c_label),
-                                edge_index=-1,
-                                energy=0.0,
-                                energy_fraction=0.0,
-                                explanation=(
-                                    "Transitivity gap: '%s' %s '%s' and "
-                                    "'%s' %s '%s', but '%s' does not "
-                                    "%s '%s'."
-                                    % (a_label, rel_type, b_label,
-                                       b_label, rel_type, c_label,
-                                       a_label, rel_type, c_label)
-                                ),
-                                proof_id=proof_id,
-                            ))
 
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
@@ -1341,125 +1119,85 @@ class SigmaGuard:
     def _check_write_standalone(
         self, source: str, target: str, relation: str, value: Any
     ) -> WriteCheckResult:
-        """Check a write using the standalone verifier."""
-        import copy
-        from sigma_guard.standalone_verifier import build_sheaf, compute_cohomology
+        """Check a write using the standalone verifier.
 
+        Uses the same constraint validators as _verify_standalone.
+        """
         t0 = time.perf_counter()
 
-        data_with_write = copy.deepcopy(self._parsed_data)
+        # Build proposed edge data by appending the new edge
+        proposed_edge_data = list(self._edge_data)
+        proposed_edge_data.append((source, target, relation, value))
 
-        existing_ids = set()
-        id_to_label = {}
-        label_to_id = {}
-        for v in data_with_write.get("vertices", []):
-            vid = v.get("id", v.get("label", ""))
-            vlabel = v.get("label", vid)
-            existing_ids.add(vid)
-            existing_ids.add(vlabel)
-            id_to_label[vid] = vlabel
-            label_to_id[vlabel] = vid
+        # Ensure source and target are in the vertex maps
+        proposed_labels = dict(self._vertex_key_labels)
+        proposed_claims = dict(self._vertex_key_claims)
+        if source not in proposed_labels:
+            proposed_labels[source] = source
+            proposed_claims[source] = {}
+        if target not in proposed_labels:
+            proposed_labels[target] = target
+            proposed_claims[target] = {}
 
-        src_id = label_to_id.get(source, source)
-        tgt_id = label_to_id.get(target, target)
-
-        if src_id not in existing_ids and source not in existing_ids:
-            data_with_write["vertices"].append(
-                {"id": source, "label": source, "claims": {}}
-            )
-        if tgt_id not in existing_ids and target not in existing_ids:
-            data_with_write["vertices"].append(
-                {"id": target, "label": target, "claims": {}}
-            )
-
-        data_with_write["edges"].append({
-            "source": src_id,
-            "target": tgt_id,
-            "relation": relation,
-        })
-
-        sheaf_after = build_sheaf(
-            data_with_write, stalk_dim=self.stalk_dim, seed=self.seed
+        # Run the same constraint validators used by verify
+        all_violations = self._detect_constraint_violations(
+            proposed_edge_data,
+            proposed_labels,
+            proposed_claims,
         )
-        result_after = compute_cohomology(sheaf_after)
 
-        new_edge_energies = result_after["edge_energies"]
-        sheaf_before_edges = len(self._parsed_data.get("edges", []))
-        new_edge_idx = sheaf_before_edges
-        new_edge_energy = 0.0
-        if new_edge_idx < len(new_edge_energies):
-            new_edge_energy = new_edge_energies[new_edge_idx]
+        # Filter: only report violations involving the new edge's endpoints
+        src_label = proposed_labels.get(source, source)
+        tgt_label = proposed_labels.get(target, target)
+        involved_labels = {source, target, src_label, tgt_label}
 
-        total_energy = sum(new_edge_energies)
-        energy_fraction = new_edge_energy / (total_energy + 1e-12)
-
-        # Check agree_on constraints only
-        constraint = self.get_constraint(relation)
-        disagreements = []
-        if constraint.agree_on:
-            v_claims_map = {}
-            for v in data_with_write.get("vertices", []):
-                vid = v.get("id", v.get("label", ""))
-                vlabel = v.get("label", vid)
-                claims = v.get("claims", {})
-                v_claims_map[vid] = claims
-                v_claims_map[vlabel] = claims
-            src_claims = v_claims_map.get(source, v_claims_map.get(src_id, {}))
-            tgt_claims = v_claims_map.get(target, v_claims_map.get(tgt_id, {}))
-            for key in sorted(constraint.agree_on):
-                u_val = src_claims.get(key)
-                v_val = tgt_claims.get(key)
-                if u_val is not None and v_val is not None and u_val != v_val:
-                    disagreements.append(key)
-        has_disagreement = len(disagreements) > 0
-
-        creates_contradiction = (
-            (new_edge_energy > 0.5 and has_disagreement)
-            or energy_fraction > 0.05
-        )
+        new_write_violations = []
+        for c in all_violations:
+            loc_a, loc_b = c.location
+            if loc_a in involved_labels or loc_b in involved_labels:
+                new_write_violations.append(c)
 
         elapsed_us = (time.perf_counter() - t0) * 1_000_000
 
-        if creates_contradiction:
+        if new_write_violations:
+            severity_order = {"CRITICAL": 4, "HIGH": 3, "MODERATE": 2, "LOW": 1}
+            worst = max(
+                new_write_violations,
+                key=lambda c: severity_order.get(c.severity, 0),
+            )
+
+            if len(new_write_violations) == 1:
+                explanation = new_write_violations[0].explanation
+            else:
+                parts = []
+                for v in new_write_violations:
+                    parts.append("[%s] %s" % (v.severity, v.explanation))
+                explanation = (
+                    "Write '%s' -> '%s' (%s) triggers %d violations: %s"
+                    % (source, target, relation or "unknown",
+                       len(new_write_violations),
+                       " | ".join(parts))
+                )
+
             proof_data = json.dumps({
                 "write_source": source,
                 "write_target": target,
-                "new_edge_energy": new_edge_energy,
+                "relation": relation,
+                "violation_count": len(new_write_violations),
+                "worst_severity": worst.severity,
             }).encode("utf-8")
             proof_id = generate_proof_id(proof_data)
 
-            severity = _classify_severity(energy_fraction)
-
-            if constraint.acyclic:
-                explanation = (
-                    "Circular dependency detected: '%s' -> '%s' (%s) "
-                    "closes a cycle in a relationship declared acyclic. "
-                    "Energy: %.4f (%.1f%% of total)."
-                    % (source, target, relation or "unknown",
-                       new_edge_energy, energy_fraction * 100)
-                )
-            elif disagreements:
-                explanation = (
-                    "Write '%s' -> '%s' (%s) creates a structural "
-                    "contradiction. Disagreement on: %s. "
-                    "Energy: %.4f (%.1f%% of total)."
-                    % (source, target, relation or "unknown",
-                       ", ".join(disagreements),
-                       new_edge_energy, energy_fraction * 100)
-                )
-            else:
-                explanation = (
-                    "Write '%s' -> '%s' (%s) creates a structural "
-                    "contradiction. Energy: %.4f (%.1f%% of total)."
-                    % (source, target, relation or "unknown",
-                       new_edge_energy, energy_fraction * 100)
-                )
+            conflicting_nodes = set()
+            for v in new_write_violations:
+                conflicting_nodes.add(v.location[0])
+                conflicting_nodes.add(v.location[1])
 
             return WriteCheckResult(
                 creates_contradiction=True,
-                severity=severity,
-                conflicting_nodes=[source, target],
-                energy_delta=new_edge_energy,
+                severity=worst.severity,
+                conflicting_nodes=sorted(conflicting_nodes),
+                energy_delta=0.0,
                 explanation=explanation,
                 proof_id=proof_id,
                 elapsed_us=elapsed_us,

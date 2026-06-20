@@ -171,7 +171,7 @@ Every AI system that builds or mutates a graph needs this.
   writes, and dependency insertions. SIGMA Guard verifies each
   mutation before commit.
 - **Legal and compliance AI** must prove their outputs are
-  structurally sound. SIGMA Guard produces cryptographic
+  structurally sound. SIGMA Guard produces deterministic
   verification receipts on every check.
 - **Knowledge graph ETL** merges data from multiple sources that
   may disagree. SIGMA Guard finds the disagreements that schema
@@ -553,7 +553,7 @@ The standalone verifier is released under Apache 2.0.
 
 SIGMA Guard is part of the Invariant Research verification stack:
 
-- [svr-verify](https://github.com/Jasonleonardvolk/svr-verify): the standalone Signed Verification Receipt (SVR) verifier. SIGMA Guard proof receipts serialize to the SVR format, and svr-verify checks the Ed25519 signature and structure with no engine dependency. On PyPI as `svr-verify`.
+- [svr-verify](https://github.com/Jasonleonardvolk/svr-verify): the standalone Signed Verification Receipt (SVR) verifier. SIGMA Guard proof receipts use content-addressed proof IDs (SHA-256) that are designed to serialize to SVR format. Ed25519 receipt signing is planned but not yet implemented in the public adapter layer. On PyPI as `svr-verify`.
 - [SATYA SVR Verifier](https://huggingface.co/spaces/jasonlvolk/satya-svr-verifier): a hosted verifier on Hugging Face, also exposed as an MCP tool so an agent can validate a receipt at a trust boundary.
 - [SVR receipt fixtures](https://huggingface.co/datasets/jasonlvolk/svr-receipts-examples): a conformance dataset of signed receipts and failure cases.
 - [SIGMA Enron demo](https://huggingface.co/spaces/jasonlvolk/sigma-enron-demo): the scaling demo on a real power-law graph.
